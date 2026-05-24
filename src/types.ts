@@ -8,6 +8,7 @@ export interface Channel {
   type: ChannelType;
   base_url: string;
   username: string | null;
+  password: string | null;
   newapi_user_id: string | null;
   status: ChannelStatus;
   last_sync_at: string | null;

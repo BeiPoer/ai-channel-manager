@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe('local API', () => {
-  it('creates a channel, masks secrets and cascades delete', async () => {
+  it('creates a channel, exposes channel password and cascades delete', async () => {
     const baseUrl = await startSub2apiMock();
     const db = createDatabase(':memory:');
     const app = createApp(db);
@@ -41,7 +41,7 @@ describe('local API', () => {
       .expect(201);
 
     expect(created.body.has_password).toBe(true);
-    expect(created.body.password).toBeUndefined();
+    expect(created.body.password).toBe('p');
 
     await request(app)
       .post(`/api/channels/${created.body.id}/tasks`)
@@ -50,7 +50,7 @@ describe('local API', () => {
 
     const list = await request(app).get('/api/channels').expect(200);
     expect(list.body[0].has_password).toBe(true);
-    expect(list.body[0].password).toBeUndefined();
+    expect(list.body[0].password).toBe('p');
 
     await request(app).delete(`/api/channels/${created.body.id}`).expect(204);
     const taskCount = db.prepare('SELECT COUNT(*) AS count FROM automation_tasks').get() as { count: number };
@@ -77,4 +77,3 @@ describe('local API', () => {
     db.close();
   });
 });
-

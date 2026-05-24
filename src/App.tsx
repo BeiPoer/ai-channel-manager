@@ -214,7 +214,7 @@ function ChannelModal({
     name: channel?.name || '',
     base_url: channel?.base_url || '',
     username: channel?.username || '',
-    password: '',
+    password: channel?.password || '',
     newapi_access_token: '',
     newapi_user_id: channel?.newapi_user_id || ''
   });
@@ -276,11 +276,10 @@ function ChannelModal({
           <label>
             密码
             <input
-              type="password"
+              type="text"
               required={!channel && type === 'sub2api'}
               value={form.password}
               onChange={(event) => setForm({ ...form, password: event.target.value })}
-              placeholder={channel ? '留空保持不变' : ''}
             />
           </label>
         </div>

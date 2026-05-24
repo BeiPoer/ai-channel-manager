@@ -109,6 +109,7 @@ export function sanitizeChannel(channel: ChannelRecord): SafeChannel {
     type: channel.type,
     base_url: channel.base_url,
     username: channel.username,
+    password: channel.password,
     newapi_user_id: channel.newapi_user_id,
     status: channel.status,
     last_sync_at: channel.last_sync_at,

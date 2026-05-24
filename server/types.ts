@@ -28,6 +28,7 @@ export interface SafeChannel {
   type: ChannelType;
   base_url: string;
   username: string | null;
+  password: string | null;
   newapi_user_id: string | null;
   status: ChannelStatus;
   last_sync_at: string | null;
@@ -94,4 +95,3 @@ export interface EmailSettings {
   default_interval_minutes: number;
   has_smtp_password?: boolean;
 }
-
