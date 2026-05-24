@@ -1,5 +1,13 @@
 import type { AlertEvent, AutomationTask, Channel, EmailSettings, Overview } from './types';
 
+type UnauthorizedHandler = () => void;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
+  unauthorizedHandler = handler;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -11,12 +19,19 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
+    if (response.status === 401 && !url.startsWith('/api/auth/')) {
+      unauthorizedHandler?.();
+    }
     throw new Error(data?.error || `请求失败：HTTP ${response.status}`);
   }
   return data as T;
 }
 
 export const api = {
+  authStatus: () => request<{ authenticated: boolean }>('/api/auth/status'),
+  login: (password: string) =>
+    request<{ authenticated: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  logout: () => request<{ authenticated: boolean }>('/api/auth/logout', { method: 'POST' }),
   channels: () => request<Channel[]>('/api/channels'),
   createChannel: (payload: Record<string, unknown>) =>
     request<Channel>('/api/channels', { method: 'POST', body: JSON.stringify(payload) }),
@@ -42,4 +57,3 @@ export const api = {
   testEmail: (recipient: string) =>
     request<{ ok: boolean }>('/api/settings/email/test', { method: 'POST', body: JSON.stringify({ recipient }) })
 };
-

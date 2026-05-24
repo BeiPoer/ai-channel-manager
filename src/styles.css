@@ -137,6 +137,12 @@ h3 {
   gap: 12px;
 }
 
+.brandActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .brandRow p,
 .topBar p,
 small,
@@ -1139,6 +1145,50 @@ textarea:focus {
   max-width: 520px;
   color: var(--muted);
   line-height: 1.6;
+}
+
+.loginShell {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(244, 247, 251, 0.92)),
+    var(--bg);
+  padding: 24px;
+}
+
+.loginPanel {
+  display: flex;
+  width: min(390px, 100%);
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 24px;
+}
+
+.loginPanel h1 {
+  font-size: 24px;
+}
+
+.loginPanel p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.loginIcon {
+  display: inline-flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
 }
 
 .spin {

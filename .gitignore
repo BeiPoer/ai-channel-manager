@@ -3,6 +3,7 @@ dist/
 data/
 .env
 .env.local
+config.json
 .codex/
 npm-debug.log*
 *.tsbuildinfo

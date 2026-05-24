@@ -3,6 +3,8 @@ import compression from 'compression';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { DatabaseSync } from 'node:sqlite';
 import { normalizeBaseUrl, syncChannel } from './adapters.js';
+import { clearSessionCookie, isAuthenticated, requireAuth, setSessionCookie, verifyAccessPassword } from './auth.js';
+import type { AppConfig } from './config.js';
 import { getChannel, getSetting, nowIso, parseJson, parseTask, sanitizeChannel, splitRecipients } from './db.js';
 import { getEmailSettings, saveEmailSettings, sendEmail } from './email.js';
 import { UpstreamError } from './http.js';
@@ -82,7 +84,7 @@ function normalizeChannelInput(body: Record<string, unknown>, existing?: Channel
   };
 }
 
-export function createApp(db: DatabaseSync): express.Express {
+export function createApp(db: DatabaseSync, config: AppConfig): express.Express {
   const app = express();
   app.use(compression());
   app.use(express.json({ limit: '2mb' }));
@@ -90,6 +92,26 @@ export function createApp(db: DatabaseSync): express.Express {
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
+
+  app.get('/api/auth/status', (req, res) => {
+    res.json({ authenticated: isAuthenticated(req, config) });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    if (!verifyAccessPassword(config, req.body?.password)) {
+      res.status(401).json({ error: '密码错误' });
+      return;
+    }
+    setSessionCookie(res, config);
+    res.json({ authenticated: true });
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    clearSessionCookie(res, config);
+    res.json({ authenticated: false });
+  });
+
+  app.use(requireAuth(config));
 
   app.get('/api/channels', (_req, res) => {
     const rows = db.prepare('SELECT * FROM channels ORDER BY updated_at DESC, id DESC').all() as unknown as ChannelRecord[];

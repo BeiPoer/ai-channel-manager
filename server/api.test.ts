@@ -3,8 +3,15 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDatabase } from './db.js';
 import { createApp } from './routes.js';
+import type { AppConfig } from './config.js';
 
 const servers: http.Server[] = [];
+const testConfig: AppConfig = {
+  accessPassword: 'test-password',
+  sessionSecret: 'test-session-secret',
+  sessionTtlHours: 24,
+  secureCookies: false
+};
 
 async function startSub2apiMock() {
   const server = http.createServer((req, res) => {
@@ -30,12 +37,29 @@ afterEach(async () => {
 });
 
 describe('local API', () => {
+  it('requires login before accessing protected APIs', async () => {
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+
+    await request(app).get('/api/health').expect(200);
+    await request(app).get('/api/channels').expect(401);
+    await request(app).post('/api/auth/login').send({ password: 'wrong' }).expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    await agent.get('/api/channels').expect(200);
+    await agent.post('/api/auth/logout').expect(200);
+    await agent.get('/api/channels').expect(401);
+    db.close();
+  });
+
   it('creates a channel, exposes channel password and cascades delete', async () => {
     const baseUrl = await startSub2apiMock();
     const db = createDatabase(':memory:');
-    const app = createApp(db);
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
 
-    const created = await request(app)
+    const created = await agent
       .post('/api/channels')
       .send({ type: 'sub2api', base_url: baseUrl, username: 'u', password: 'p', name: 'mock' })
       .expect(201);
@@ -43,16 +67,16 @@ describe('local API', () => {
     expect(created.body.has_password).toBe(true);
     expect(created.body.password).toBe('p');
 
-    await request(app)
+    await agent
       .post(`/api/channels/${created.body.id}/tasks`)
       .send({ type: 'low_balance', threshold: 3 })
       .expect(201);
 
-    const list = await request(app).get('/api/channels').expect(200);
+    const list = await agent.get('/api/channels').expect(200);
     expect(list.body[0].has_password).toBe(true);
     expect(list.body[0].password).toBe('p');
 
-    await request(app).delete(`/api/channels/${created.body.id}`).expect(204);
+    await agent.delete(`/api/channels/${created.body.id}`).expect(204);
     const taskCount = db.prepare('SELECT COUNT(*) AS count FROM automation_tasks').get() as { count: number };
     const cacheCount = db.prepare('SELECT COUNT(*) AS count FROM channel_cache').get() as { count: number };
     expect(taskCount.count).toBe(0);
@@ -63,13 +87,15 @@ describe('local API', () => {
   it('keeps existing sensitive values when update sends blank fields', async () => {
     const baseUrl = await startSub2apiMock();
     const db = createDatabase(':memory:');
-    const app = createApp(db);
-    const created = await request(app)
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const created = await agent
       .post('/api/channels')
       .send({ type: 'sub2api', base_url: baseUrl, username: 'u', password: 'p', name: 'mock' })
       .expect(201);
 
-    await request(app).put(`/api/channels/${created.body.id}`).send({ name: 'renamed', password: '' }).expect(200);
+    await agent.put(`/api/channels/${created.body.id}`).send({ name: 'renamed', password: '' }).expect(200);
 
     const row = db.prepare('SELECT name, password FROM channels WHERE id = ?').get(created.body.id) as { name: string; password: string };
     expect(row.name).toBe('renamed');

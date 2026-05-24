@@ -77,3 +77,5 @@ export interface EmailSettings {
   default_interval_minutes: number;
   has_smtp_password?: boolean;
 }
+
+export type AuthState = 'checking' | 'authenticated' | 'anonymous';

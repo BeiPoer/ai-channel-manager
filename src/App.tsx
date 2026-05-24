@@ -10,6 +10,7 @@ import {
   Mail,
   Pencil,
   Plus,
+  LogOut,
   RefreshCw,
   Search,
   Send,
@@ -22,8 +23,8 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { api } from './api';
-import type { AlertEvent, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType } from './types';
+import { api, setUnauthorizedHandler } from './api';
+import type { AlertEvent, AuthState, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType } from './types';
 
 type TabKey = 'overview' | 'automation' | 'alerts';
 
@@ -212,6 +213,55 @@ function EmptyPanel({ icon, title, action }: { icon: ReactNode; title: string; a
       <p>{title}</p>
       {action}
     </div>
+  );
+}
+
+function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void | Promise<void> }) {
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError('');
+    try {
+      await api.login(password);
+      setPassword('');
+      await onAuthenticated();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="loginShell">
+      <form className="loginPanel" onSubmit={submit}>
+        <div className="loginIcon">
+          <KeyRound size={24} />
+        </div>
+        <span className="brandKicker">SECURE ACCESS</span>
+        <h1>AI 渠道管理台</h1>
+        <p>请输入配置文件里的访问密码。</p>
+        <label>
+          访问密码
+          <input
+            type="password"
+            autoFocus
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </label>
+        {error && <div className="errorBox">{error}</div>}
+        <button className="primaryButton fullWidth" type="submit" disabled={submitting}>
+          {submitting ? '登录中' : '登录'}
+        </button>
+      </form>
+    </main>
   );
 }
 
@@ -869,6 +919,7 @@ function AlertsPanel({ alerts }: { alerts: AlertEvent[] }) {
 }
 
 export default function App() {
+  const [authState, setAuthState] = useState<AuthState>('checking');
   const [channels, setChannels] = useState<Channel[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
@@ -905,10 +956,32 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadChannels().catch((err) => setError((err as Error).message));
+    setUnauthorizedHandler(() => {
+      setAuthState('anonymous');
+      setChannels([]);
+      setSelectedId(null);
+      setOverview(null);
+      setAlerts([]);
+    });
+    api
+      .authStatus()
+      .then((status) => {
+        if (status.authenticated) {
+          setAuthState('authenticated');
+          return loadChannels();
+        }
+        setAuthState('anonymous');
+        return undefined;
+      })
+      .catch((err) => {
+        setAuthState('anonymous');
+        setError((err as Error).message);
+      });
+    return () => setUnauthorizedHandler(null);
   }, []);
 
   useEffect(() => {
+    if (authState !== 'authenticated') return;
     if (!selectedId) {
       setOverview(null);
       return;
@@ -931,9 +1004,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [authState, selectedId]);
 
   useEffect(() => {
+    if (authState !== 'authenticated') return;
     if (!selectedId) {
       setAlerts([]);
       return;
@@ -952,7 +1026,23 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, tab]);
+  }, [authState, selectedId, tab]);
+
+  async function afterLogin() {
+    setAuthState('authenticated');
+    setError('');
+    await loadChannels();
+  }
+
+  async function logout() {
+    await api.logout().catch(() => undefined);
+    setAuthState('anonymous');
+    setChannels([]);
+    setSelectedId(null);
+    setOverview(null);
+    setAlerts([]);
+    setError('');
+  }
 
   async function syncSelected() {
     if (!selectedId) return;
@@ -997,6 +1087,16 @@ export default function App() {
     { key: 'alerts', label: '告警', icon: <Bell size={16} /> }
   ];
 
+  if (authState === 'checking') {
+    return (
+      <main className="loginShell">
+        <LoadingState label="正在检查登录状态" />
+      </main>
+    );
+  }
+
+  if (authState === 'anonymous') return <LoginScreen onAuthenticated={afterLogin} />;
+
   return (
     <div className="appShell">
       <aside className="sidebar">
@@ -1006,9 +1106,14 @@ export default function App() {
             <h1>AI 渠道管理台</h1>
             <p>{channels.length} 个渠道接入</p>
           </div>
-          <button className="iconButton" onClick={() => setEmailOpen(true)} aria-label="邮件设置">
-            <Settings size={18} />
-          </button>
+          <div className="brandActions">
+            <button className="iconButton" onClick={() => setEmailOpen(true)} aria-label="邮件设置">
+              <Settings size={18} />
+            </button>
+            <button className="iconButton" onClick={logout} aria-label="退出登录">
+              <LogOut size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="railStats" aria-label="渠道状态概览">
