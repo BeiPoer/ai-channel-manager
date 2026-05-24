@@ -1,23 +1,36 @@
 import {
+  Activity,
   AlertTriangle,
   Bell,
   CheckCircle2,
   CircleDollarSign,
   Clock3,
   Database,
+  KeyRound,
   Mail,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
+  Send,
   Settings,
+  ShieldAlert,
   Trash2,
-  X
+  WalletCards,
+  X,
+  Zap
 } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { api } from './api';
-import type { AlertEvent, AutomationTask, Channel, ChannelType, EmailSettings, Overview } from './types';
+import type { AlertEvent, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType } from './types';
 
 type TabKey = 'overview' | 'automation' | 'alerts';
+
+type MessageState = {
+  tone: 'success' | 'error';
+  text: string;
+} | null;
 
 const emptyEmail: EmailSettings = {
   smtp_host: '',
@@ -29,7 +42,40 @@ const emptyEmail: EmailSettings = {
   default_interval_minutes: 30
 };
 
-const formatTime = (value: string | null | undefined) => (value ? new Date(value).toLocaleString() : '-');
+const statusCopy: Record<Channel['status'], { label: string; caption: string }> = {
+  active: { label: '正常', caption: '可用' },
+  syncing: { label: '同步中', caption: '处理中' },
+  error: { label: '异常', caption: '需处理' }
+};
+
+const taskTypeCopy: Record<TaskType, string> = {
+  low_balance: '低余额',
+  burn_rate: '消耗过快'
+};
+
+function formatTime(value: string | null | undefined, fallback = '-') {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleString();
+}
+
+function formatShortTime(value: string | null | undefined, fallback = '从未同步') {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleString(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function formatNumber(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '-';
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
+}
 
 function asRows(data: unknown): Record<string, unknown>[] {
   if (Array.isArray(data)) {
@@ -49,10 +95,109 @@ function valuePreview(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function credentialLabel(channel: Channel) {
+  if (channel.type === 'sub2api') return channel.has_password ? '密码已保存' : '待配置密码';
+  return channel.has_newapi_access_token ? '令牌已保存' : '待配置令牌';
+}
+
 function StatusBadge({ status }: { status: Channel['status'] }) {
-  const className = status === 'active' ? 'badge ok' : status === 'syncing' ? 'badge pending' : 'badge error';
-  const label = status === 'active' ? '正常' : status === 'syncing' ? '同步中' : '异常';
-  return <span className={className}>{label}</span>;
+  return <span className={`statusBadge ${status}`}>{statusCopy[status].label}</span>;
+}
+
+function TypeBadge({ type }: { type: ChannelType }) {
+  return <span className={`typeBadge ${type}`}>{type === 'sub2api' ? 'sub2api' : 'new-api'}</span>;
+}
+
+function SectionHeader({
+  title,
+  description,
+  icon,
+  right
+}: {
+  title: string;
+  description?: string;
+  icon?: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div className="sectionHeader">
+      <div className="sectionTitle">
+        {icon && <span className="sectionIcon">{icon}</span>}
+        <div>
+          <h3>{title}</h3>
+          {description && <p>{description}</p>}
+        </div>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function DataSection({
+  title,
+  description,
+  icon,
+  right,
+  children,
+  className = ''
+}: {
+  title: string;
+  description?: string;
+  icon?: ReactNode;
+  right?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`dataPanel ${className}`}>
+      <SectionHeader title={title} description={description} icon={icon} right={right} />
+      {children}
+    </section>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  meta,
+  icon,
+  tone = 'default'
+}: {
+  label: string;
+  value: ReactNode;
+  meta: ReactNode;
+  icon: ReactNode;
+  tone?: 'default' | 'success' | 'warning' | 'error' | 'accent';
+}) {
+  return (
+    <div className={`metric ${tone}`}>
+      <div className="metricTop">
+        <span>{label}</span>
+        <span className="metricIcon">{icon}</span>
+      </div>
+      <strong>{value}</strong>
+      <small>{meta}</small>
+    </div>
+  );
+}
+
+function LoadingState({ label = '正在加载数据' }: { label?: string }) {
+  return (
+    <div className="loadingState">
+      <RefreshCw size={18} className="spin" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function EmptyPanel({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) {
+  return (
+    <div className="emptyPanel">
+      <span className="emptyIcon">{icon}</span>
+      <p>{title}</p>
+      {action}
+    </div>
+  );
 }
 
 function ChannelModal({
@@ -62,7 +207,7 @@ function ChannelModal({
 }: {
   channel: Channel | null;
   onClose: () => void;
-  onSaved: (channel: Channel) => void;
+  onSaved: (channel: Channel) => void | Promise<void>;
 }) {
   const [type, setType] = useState<ChannelType>(channel?.type || 'sub2api');
   const [form, setForm] = useState({
@@ -83,7 +228,7 @@ function ChannelModal({
     try {
       const payload = { ...form, type };
       const saved = channel ? await api.updateChannel(channel.id, payload) : await api.createChannel(payload);
-      onSaved(saved);
+      await onSaved(saved);
       onClose();
     } catch (err) {
       setError((err as Error).message);
@@ -96,11 +241,16 @@ function ChannelModal({
     <div className="modalBackdrop">
       <form className="modal" onSubmit={submit}>
         <div className="modalHeader">
-          <h2>{channel ? '编辑渠道' : '添加渠道'}</h2>
+          <div>
+            <span className="modalEyebrow">{channel ? 'CHANNEL EDIT' : 'NEW CHANNEL'}</span>
+            <h2>{channel ? '编辑渠道' : '添加渠道'}</h2>
+            <p>配置渠道认证后即可同步余额、账号资料和自动化告警。</p>
+          </div>
           <button type="button" className="iconButton" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
+
         <div className="segmented">
           <button type="button" className={type === 'sub2api' ? 'active' : ''} onClick={() => setType('sub2api')} disabled={Boolean(channel)}>
             sub2api
@@ -109,30 +259,33 @@ function ChannelModal({
             new-api
           </button>
         </div>
+
         <label>
           名称
-          <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="可留空自动生成" />
+          <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="可留空自动生成" autoFocus />
         </label>
         <label>
           站点链接
           <input required value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} placeholder="https://example.com" />
         </label>
-        <label>
-          账号
-          <input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
-        </label>
-        <label>
-          密码
-          <input
-            type="password"
-            required={!channel && type === 'sub2api'}
-            value={form.password}
-            onChange={(event) => setForm({ ...form, password: event.target.value })}
-            placeholder={channel ? '留空保持不变' : ''}
-          />
-        </label>
+        <div className="formGrid">
+          <label>
+            账号
+            <input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
+          </label>
+          <label>
+            密码
+            <input
+              type="password"
+              required={!channel && type === 'sub2api'}
+              value={form.password}
+              onChange={(event) => setForm({ ...form, password: event.target.value })}
+              placeholder={channel ? '留空保持不变' : ''}
+            />
+          </label>
+        </div>
         {type === 'newapi' && (
-          <>
+          <div className="formGrid">
             <label>
               系统访问令牌
               <input
@@ -147,7 +300,7 @@ function ChannelModal({
               userId
               <input required value={form.newapi_user_id} onChange={(event) => setForm({ ...form, newapi_user_id: event.target.value })} />
             </label>
-          </>
+          </div>
         )}
         {error && <div className="errorBox">{error}</div>}
         <div className="modalFooter">
@@ -155,7 +308,7 @@ function ChannelModal({
             取消
           </button>
           <button type="submit" className="primaryButton" disabled={saving}>
-            {saving ? '保存中' : '保存'}
+            {saving ? '保存中' : '保存渠道'}
           </button>
         </div>
       </form>
@@ -167,32 +320,43 @@ function EmailModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<EmailSettings>(emptyEmail);
   const [password, setPassword] = useState('');
   const [testRecipient, setTestRecipient] = useState('');
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState<MessageState>(null);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
-    api.emailSettings().then(setSettings).catch((error) => setMessage((error as Error).message));
+    api
+      .emailSettings()
+      .then(setSettings)
+      .catch((error) => setMessage({ tone: 'error', text: (error as Error).message }));
   }, []);
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    setMessage('');
+    setSaving(true);
+    setMessage(null);
     try {
       const saved = await api.saveEmailSettings({ ...settings, smtp_password: password });
       setSettings(saved);
       setPassword('');
-      setMessage('已保存');
+      setMessage({ tone: 'success', text: '邮件设置已保存' });
     } catch (error) {
-      setMessage((error as Error).message);
+      setMessage({ tone: 'error', text: (error as Error).message });
+    } finally {
+      setSaving(false);
     }
   }
 
   async function test() {
-    setMessage('');
+    setTesting(true);
+    setMessage(null);
     try {
       await api.testEmail(testRecipient);
-      setMessage('测试邮件已发送');
+      setMessage({ tone: 'success', text: '测试邮件已发送' });
     } catch (error) {
-      setMessage((error as Error).message);
+      setMessage({ tone: 'error', text: (error as Error).message });
+    } finally {
+      setTesting(false);
     }
   }
 
@@ -200,12 +364,17 @@ function EmailModal({ onClose }: { onClose: () => void }) {
     <div className="modalBackdrop">
       <form className="modal wideModal" onSubmit={save}>
         <div className="modalHeader">
-          <h2>邮件设置</h2>
+          <div>
+            <span className="modalEyebrow">MAIL DELIVERY</span>
+            <h2>邮件设置</h2>
+            <p>告警任务会使用这里的 SMTP 和默认收件人配置。</p>
+          </div>
           <button type="button" className="iconButton" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
-        <div className="formGrid">
+
+        <div className="formGrid three">
           <label>
             SMTP 主机
             <input value={settings.smtp_host} onChange={(event) => setSettings({ ...settings, smtp_host: event.target.value })} />
@@ -226,24 +395,32 @@ function EmailModal({ onClose }: { onClose: () => void }) {
             />
             SSL/TLS
           </label>
+        </div>
+        <div className="formGrid">
           <label>
             SMTP 用户
             <input value={settings.smtp_user} onChange={(event) => setSettings({ ...settings, smtp_user: event.target.value })} />
           </label>
           <label>
             SMTP 密码
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={settings.has_smtp_password ? '已保存，留空保持不变' : ''} />
-          </label>
-          <label>
-            发件人
-            <input value={settings.smtp_from} onChange={(event) => setSettings({ ...settings, smtp_from: event.target.value })} />
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder={settings.has_smtp_password ? '已保存，留空保持不变' : ''}
+            />
           </label>
         </div>
+        <label>
+          发件人
+          <input value={settings.smtp_from} onChange={(event) => setSettings({ ...settings, smtp_from: event.target.value })} />
+        </label>
         <label>
           默认收件人
           <textarea
             value={settings.default_recipients.join('\n')}
             onChange={(event) => setSettings({ ...settings, default_recipients: event.target.value.split(/\n|,|;/).filter(Boolean) })}
+            placeholder="一行一个邮箱，或用逗号分隔"
           />
         </label>
         <label>
@@ -256,18 +433,22 @@ function EmailModal({ onClose }: { onClose: () => void }) {
           />
         </label>
         <div className="testRow">
-          <input value={testRecipient} onChange={(event) => setTestRecipient(event.target.value)} placeholder="测试收件人，留空使用默认收件人" />
-          <button type="button" className="ghostButton" onClick={test}>
-            发送测试
+          <div className="inputWithIcon">
+            <Mail size={16} />
+            <input value={testRecipient} onChange={(event) => setTestRecipient(event.target.value)} placeholder="测试收件人，留空使用默认收件人" />
+          </div>
+          <button type="button" className="ghostButton" onClick={test} disabled={testing}>
+            <Send size={16} />
+            {testing ? '发送中' : '发送测试'}
           </button>
         </div>
-        {message && <div className={message.includes('已') ? 'successBox' : 'errorBox'}>{message}</div>}
+        {message && <div className={message.tone === 'success' ? 'successBox' : 'errorBox'}>{message.text}</div>}
         <div className="modalFooter">
           <button type="button" className="ghostButton" onClick={onClose}>
             关闭
           </button>
-          <button type="submit" className="primaryButton">
-            保存
+          <button type="submit" className="primaryButton" disabled={saving}>
+            {saving ? '保存中' : '保存设置'}
           </button>
         </div>
       </form>
@@ -293,7 +474,9 @@ function JsonTable({ data, emptyText = '暂无数据' }: { data: unknown; emptyT
           {rows.map((row, index) => (
             <tr key={index}>
               {columns.map((column) => (
-                <td key={column}>{valuePreview(row[column])}</td>
+                <td key={column} title={valuePreview(row[column])}>
+                  {valuePreview(row[column])}
+                </td>
               ))}
             </tr>
           ))}
@@ -313,36 +496,147 @@ function BalanceChart({ history }: { history: Overview['history'] }) {
   const pathData = points
     .map((item, index) => {
       const x = (index / (points.length - 1)) * 100;
-      const y = 90 - ((item.balance - min) / range) * 70;
+      const y = 88 - ((item.balance - min) / range) * 70;
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
     })
     .join(' ');
   return (
-    <svg className="chart" viewBox="0 0 100 100" preserveAspectRatio="none">
-      <path d={pathData} />
-    </svg>
+    <div className="chartFrame">
+      <svg className="chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="余额趋势">
+        {[20, 40, 60, 80].map((y) => (
+          <line key={y} className="chartGridLine" x1="0" x2="100" y1={y} y2={y} />
+        ))}
+        <path className="chartArea" d={`${pathData} L 100 94 L 0 94 Z`} />
+        <path className="chartLine" d={pathData} />
+      </svg>
+      <div className="chartLegend">
+        <span>低点 {formatNumber(min)}</span>
+        <span>高点 {formatNumber(max)}</span>
+      </div>
+    </div>
   );
 }
 
-function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAlertsChanged: () => void }) {
+function OverviewPanel({ overview }: { overview: Overview }) {
+  const snapshot = overview.latest_snapshot;
+  const status = overview.channel.status;
+  const lastSync = formatTime(overview.channel.last_sync_at, '尚未同步');
+  const dataCount = {
+    groups: asRows(overview.groups).length,
+    tokens: asRows(overview.tokens).length,
+    subscriptions: asRows(overview.subscriptions).length
+  };
+
+  return (
+    <>
+      <div className="metricGrid">
+        <MetricCard
+          label="当前余额"
+          value={formatNumber(snapshot?.balance)}
+          meta={snapshot?.unit || '原始单位'}
+          icon={<WalletCards size={18} />}
+          tone="accent"
+        />
+        <MetricCard
+          label="已用余额"
+          value={formatNumber(snapshot?.used_balance)}
+          meta={snapshot ? `采集于 ${formatShortTime(snapshot.captured_at, '-')}` : '等待首次同步'}
+          icon={<CircleDollarSign size={18} />}
+        />
+        <MetricCard
+          label="渠道健康"
+          value={statusCopy[status].label}
+          meta={`最近同步 ${lastSync}`}
+          icon={status === 'active' ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
+          tone={status === 'active' ? 'success' : status === 'syncing' ? 'warning' : 'error'}
+        />
+      </div>
+
+      <div className="overviewGrid">
+        <DataSection
+          className="chartPanel wide"
+          title="余额趋势"
+          description={`最近 ${overview.history.slice(-30).length} 个快照`}
+          icon={<Activity size={17} />}
+          right={<span className="dataPill">{snapshot?.unit || 'unit'}</span>}
+        >
+          <BalanceChart history={overview.history} />
+        </DataSection>
+
+        <DataSection className="snapshotPanel" title="同步状态" description="当前渠道的运行上下文" icon={<RefreshCw size={17} />}>
+          <div className="snapshotList">
+            <div>
+              <span>状态</span>
+              <strong>{statusCopy[status].caption}</strong>
+            </div>
+            <div>
+              <span>账号</span>
+              <strong>{overview.channel.username || '-'}</strong>
+            </div>
+            <div>
+              <span>认证</span>
+              <strong>{credentialLabel(overview.channel)}</strong>
+            </div>
+            <div>
+              <span>更新时间</span>
+              <strong>{formatShortTime(overview.channel.updated_at, '-')}</strong>
+            </div>
+          </div>
+        </DataSection>
+      </div>
+
+      <DataSection title="账户资料" description="渠道返回的用户资料缓存" icon={<Database size={17} />}>
+        <JsonTable data={overview.profile ? [overview.profile] : []} emptyText="暂无账户资料缓存" />
+      </DataSection>
+
+      <div className="overviewDetails">
+        <DataSection title="分组" description="同步缓存" icon={<Database size={17} />} right={<span className="dataPill">{dataCount.groups} 项</span>}>
+          <JsonTable data={overview.groups} emptyText="暂无分组缓存" />
+        </DataSection>
+        <DataSection title="令牌" description="同步缓存" icon={<KeyRound size={17} />} right={<span className="dataPill">{dataCount.tokens} 项</span>}>
+          <JsonTable data={overview.tokens} emptyText="暂无令牌缓存" />
+        </DataSection>
+      </div>
+
+      {overview.channel.type === 'sub2api' && (
+        <DataSection
+          title="当前订阅"
+          description="sub2api 订阅缓存"
+          icon={<Zap size={17} />}
+          right={<span className="dataPill">{dataCount.subscriptions} 项</span>}
+        >
+          <JsonTable data={overview.subscriptions} emptyText="暂无订阅缓存" />
+        </DataSection>
+      )}
+    </>
+  );
+}
+
+function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAlertsChanged: () => void | Promise<void> }) {
   const [tasks, setTasks] = useState<AutomationTask[]>([]);
   const [form, setForm] = useState({
-    type: 'low_balance',
+    type: 'low_balance' as TaskType,
     threshold: '',
     interval_minutes: 30,
     lookback_minutes: 60,
     cooldown_minutes: 60,
     recipients: ''
   });
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const isBurnRate = form.type === 'burn_rate';
 
   const load = () => {
+    setLoading(true);
+    setError('');
     void api
       .tasks(channel.id)
       .then(setTasks)
-      .catch((err) => setError((err as Error).message));
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
   };
+
   useEffect(() => {
     load();
   }, [channel.id]);
@@ -350,6 +644,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
   async function create(event: FormEvent) {
     event.preventDefault();
     setError('');
+    setMessage('');
     try {
       await api.createTask(channel.id, {
         ...form,
@@ -357,6 +652,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
         recipients: form.recipients
       });
       setForm({ ...form, threshold: '', recipients: '' });
+      setMessage('任务已创建');
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -364,19 +660,30 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
   }
 
   async function toggle(task: AutomationTask) {
-    await api.updateTask(channel.id, task.id, { enabled: !task.enabled });
-    load();
-    onAlertsChanged();
+    setError('');
+    try {
+      await api.updateTask(channel.id, task.id, { enabled: !task.enabled });
+      load();
+      await onAlertsChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
 
   async function remove(task: AutomationTask) {
-    await api.deleteTask(channel.id, task.id);
-    load();
+    setError('');
+    try {
+      await api.deleteTask(channel.id, task.id);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
 
   return (
     <div className="panelGrid">
-      <form className="taskForm" onSubmit={create}>
+      <form className="taskForm dataPanel" onSubmit={create}>
+        <SectionHeader title="新建自动化" description="按余额阈值或消耗速度触发邮件告警" icon={<Clock3 size={17} />} />
         <div className="segmented">
           <button type="button" className={form.type === 'low_balance' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'low_balance' })}>
             低余额
@@ -393,7 +700,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
             step="0.0001"
             value={form.threshold}
             onChange={(event) => setForm({ ...form, threshold: event.target.value })}
-            placeholder={isBurnRate ? '例如 50，表示每小时消耗超过 50 预警' : '例如 10，表示余额小于等于 10 预警'}
+            placeholder={isBurnRate ? '例如 50' : '例如 10'}
           />
         </label>
         <div className={`formGrid ${isBurnRate ? 'three' : ''}`}>
@@ -436,37 +743,100 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
           收件人
           <textarea value={form.recipients} onChange={(event) => setForm({ ...form, recipients: event.target.value })} placeholder="留空使用全局默认收件人" />
         </label>
-        <button className="primaryButton" type="submit">
+        <button className="primaryButton fullWidth" type="submit">
+          <Plus size={16} />
           新建任务
         </button>
+        {message && <div className="successBox">{message}</div>}
         {error && <div className="errorBox">{error}</div>}
       </form>
-      <div className="taskList">
-        {tasks.map((task) => (
-          <div className="taskItem" key={task.id}>
-            <div>
-              <strong>{task.type === 'low_balance' ? '低余额' : '消耗过快'}</strong>
-              <p>
-                {task.type === 'low_balance'
-                  ? `余额 <= ${task.threshold}`
-                  : `每小时消耗 >= ${task.threshold} · 窗口 ${task.lookback_minutes} 分钟`}{' '}
-                · 每 {task.interval_minutes} 分钟检查 · 冷却 {task.cooldown_minutes} 分钟
-              </p>
-            </div>
-            <div className="taskActions">
-              <label className="switch">
-                <input type="checkbox" checked={task.enabled} onChange={() => toggle(task)} />
-                <span />
-              </label>
-              <button className="iconButton danger" onClick={() => remove(task)} aria-label="删除任务">
-                <Trash2 size={17} />
-              </button>
-            </div>
+
+      <DataSection
+        className="taskListPanel"
+        title="任务列表"
+        description={`${channel.name} 的自动化规则`}
+        icon={<Bell size={17} />}
+        right={<span className="dataPill">{tasks.length} 个任务</span>}
+      >
+        {loading && !tasks.length ? (
+          <LoadingState label="正在加载任务" />
+        ) : tasks.length ? (
+          <div className="taskList">
+            {tasks.map((task) => (
+              <div className="taskItem" key={task.id}>
+                <div className="taskSummary">
+                  <span className={`taskType ${task.type}`}>{taskTypeCopy[task.type]}</span>
+                  <strong>
+                    {task.type === 'low_balance'
+                      ? `余额 <= ${formatNumber(task.threshold)}`
+                      : `每小时消耗 >= ${formatNumber(task.threshold)}`}
+                  </strong>
+                  <p>
+                    每 {task.interval_minutes} 分钟检查
+                    {task.type === 'burn_rate' ? ` · 窗口 ${task.lookback_minutes} 分钟` : ''} · 冷却 {task.cooldown_minutes} 分钟
+                  </p>
+                  <small>上次运行 {formatTime(task.last_run_at, '尚未运行')} · 上次告警 {formatTime(task.last_alert_at, '尚未告警')}</small>
+                </div>
+                <div className="taskActions">
+                  <label className="switch" title={task.enabled ? '已启用' : '已停用'}>
+                    <input type="checkbox" checked={task.enabled} onChange={() => toggle(task)} />
+                    <span />
+                  </label>
+                  <button className="iconButton danger" onClick={() => remove(task)} aria-label="删除任务" type="button">
+                    <Trash2 size={17} />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-        {!tasks.length && <div className="emptyState">暂无自动化任务</div>}
-      </div>
+        ) : (
+          <EmptyPanel icon={<Clock3 size={24} />} title="暂无自动化任务" />
+        )}
+      </DataSection>
     </div>
+  );
+}
+
+function AlertsPanel({ alerts }: { alerts: AlertEvent[] }) {
+  if (!alerts.length) {
+    return (
+      <DataSection title="告警事件" description="当前渠道还没有触发记录" icon={<Bell size={17} />}>
+        <EmptyPanel icon={<Bell size={24} />} title="暂无告警记录" />
+      </DataSection>
+    );
+  }
+
+  return (
+    <DataSection title="告警事件" description="按时间倒序展示邮件投递和触发内容" icon={<Bell size={17} />} right={<span className="dataPill">{alerts.length} 条</span>}>
+      <div className="tableWrap alertTable">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>类型</th>
+              <th>内容</th>
+              <th>邮件</th>
+            </tr>
+          </thead>
+          <tbody>
+            {alerts.map((alert) => (
+              <tr key={alert.id}>
+                <td>{formatTime(alert.created_at)}</td>
+                <td>
+                  <span className={`taskType ${alert.type}`}>{taskTypeCopy[alert.type]}</span>
+                </td>
+                <td title={alert.message}>{alert.message}</td>
+                <td>
+                  <span className={`emailState ${alert.email_sent ? 'ok' : alert.email_error ? 'error' : 'pending'}`}>
+                    {alert.email_sent ? '已发送' : alert.email_error || '未发送'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </DataSection>
   );
 }
 
@@ -487,12 +857,23 @@ export default function App() {
     () => channels.filter((channel) => `${channel.name} ${channel.base_url} ${channel.username || ''}`.toLowerCase().includes(query.toLowerCase())),
     [channels, query]
   );
+  const channelStats = useMemo(
+    () => ({
+      active: channels.filter((channel) => channel.status === 'active').length,
+      syncing: channels.filter((channel) => channel.status === 'syncing').length,
+      error: channels.filter((channel) => channel.status === 'error').length
+    }),
+    [channels]
+  );
 
   async function loadChannels(nextSelectedId?: number) {
     const list = await api.channels();
     setChannels(list);
-    if (nextSelectedId) setSelectedId(nextSelectedId);
-    else if (!selectedId && list[0]) setSelectedId(list[0].id);
+    setSelectedId((current) => {
+      if (nextSelectedId && list.some((channel) => channel.id === nextSelectedId)) return nextSelectedId;
+      if (current && list.some((channel) => channel.id === current)) return current;
+      return list[0]?.id || null;
+    });
   }
 
   useEffect(() => {
@@ -500,20 +881,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setOverview(null);
+      return;
+    }
+    let cancelled = false;
     setLoading(true);
     setError('');
+    setOverview(null);
     api
       .overview(selectedId)
-      .then(setOverview)
-      .catch((err) => setError((err as Error).message))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (!cancelled) setOverview(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId]);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setAlerts([]);
+      return;
+    }
+    if (tab !== 'alerts') return;
+    let cancelled = false;
     setError('');
-    if (tab === 'alerts') api.alerts(selectedId).then(setAlerts).catch((err) => setError((err as Error).message));
+    api
+      .alerts(selectedId)
+      .then((data) => {
+        if (!cancelled) setAlerts(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId, tab]);
 
   async function syncSelected() {
@@ -524,6 +934,7 @@ export default function App() {
       await api.syncChannel(selectedId);
       await loadChannels(selectedId);
       setOverview(await api.overview(selectedId));
+      if (tab === 'alerts') setAlerts(await api.alerts(selectedId));
     } catch (err) {
       setError((err as Error).message);
       await loadChannels(selectedId).catch(() => undefined);
@@ -534,13 +945,25 @@ export default function App() {
 
   async function deleteSelected() {
     if (!selected) return;
-    await api.deleteChannel(selected.id);
-    const list = await api.channels();
-    setChannels(list);
-    setSelectedId(list[0]?.id || null);
+    const confirmed = window.confirm(`确定删除渠道「${selected.name}」吗？相关缓存和自动化配置也会被删除。`);
+    if (!confirmed) return;
+    setLoading(true);
+    setError('');
+    try {
+      await api.deleteChannel(selected.id);
+      const list = await api.channels();
+      setChannels(list);
+      setSelectedId(list[0]?.id || null);
+      setOverview(null);
+      setAlerts([]);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const tabs: Array<{ key: TabKey; label: string; icon: JSX.Element; hidden?: boolean }> = [
+  const tabs: Array<{ key: TabKey; label: string; icon: ReactNode }> = [
     { key: 'overview', label: '概览', icon: <CircleDollarSign size={16} /> },
     { key: 'automation', label: '自动化', icon: <Clock3 size={16} /> },
     { key: 'alerts', label: '告警', icon: <Bell size={16} /> }
@@ -551,33 +974,64 @@ export default function App() {
       <aside className="sidebar">
         <div className="brandRow">
           <div>
+            <span className="brandKicker">AI OPS</span>
             <h1>AI 渠道管理台</h1>
-            <p>{channels.length} 个渠道</p>
+            <p>{channels.length} 个渠道接入</p>
           </div>
           <button className="iconButton" onClick={() => setEmailOpen(true)} aria-label="邮件设置">
             <Settings size={18} />
           </button>
         </div>
+
+        <div className="railStats" aria-label="渠道状态概览">
+          <div>
+            <strong>{channelStats.active}</strong>
+            <span>正常</span>
+          </div>
+          <div>
+            <strong>{channelStats.syncing}</strong>
+            <span>同步中</span>
+          </div>
+          <div>
+            <strong>{channelStats.error}</strong>
+            <span>异常</span>
+          </div>
+        </div>
+
         <div className="searchBox">
           <Search size={16} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索渠道" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、URL 或账号" />
         </div>
         <button className="addButton" onClick={() => setChannelModal('new')}>
           <Plus size={17} />
           添加渠道
         </button>
+
         <div className="channelList">
           {filtered.map((channel) => (
             <button key={channel.id} className={`channelItem ${channel.id === selectedId ? 'selected' : ''}`} onClick={() => setSelectedId(channel.id)}>
-              <span className={`typeDot ${channel.type}`} />
-              <span>
-                <strong>{channel.name}</strong>
-                <small>{channel.base_url}</small>
+              <span className={`channelRailMark ${channel.status}`} />
+              <span className="channelMain">
+                <span className="channelTitleRow">
+                  <strong>{channel.name}</strong>
+                  <TypeBadge type={channel.type} />
+                </span>
+                <small className="channelUrl">{channel.base_url}</small>
+                <span className="channelMeta">
+                  <span>
+                    <Clock3 size={12} />
+                    {formatShortTime(channel.last_sync_at)}
+                  </span>
+                  <span>
+                    <KeyRound size={12} />
+                    {credentialLabel(channel)}
+                  </span>
+                </span>
               </span>
               <StatusBadge status={channel.status} />
             </button>
           ))}
-          {!filtered.length && <div className="emptyState">暂无渠道</div>}
+          {!filtered.length && <EmptyPanel icon={<Database size={24} />} title={channels.length ? '没有匹配的渠道' : '暂无渠道'} />}
         </div>
       </aside>
 
@@ -585,132 +1039,91 @@ export default function App() {
         {selected ? (
           <>
             <header className="topBar">
-              <div>
+              <div className="channelHero">
                 <div className="titleLine">
                   <h2>{selected.name}</h2>
-                  <span className={`typeBadge ${selected.type}`}>{selected.type}</span>
+                  <TypeBadge type={selected.type} />
                   <StatusBadge status={selected.status} />
                 </div>
                 <p>{selected.base_url}</p>
+                <div className="heroMeta">
+                  <span>
+                    <Clock3 size={14} />
+                    最近同步 {formatTime(selected.last_sync_at, '尚未同步')}
+                  </span>
+                  <span>
+                    <KeyRound size={14} />
+                    {credentialLabel(selected)}
+                  </span>
+                  {selected.username && <span>账号 {selected.username}</span>}
+                </div>
               </div>
               <div className="toolbar">
                 <button className="ghostButton" onClick={() => setChannelModal(selected)}>
-                  <Settings size={16} />
+                  <Pencil size={16} />
                   编辑
                 </button>
                 <button className="ghostButton" onClick={syncSelected} disabled={loading}>
                   <RefreshCw size={16} className={loading ? 'spin' : ''} />
                   同步
                 </button>
-                <button className="ghostButton dangerText" onClick={deleteSelected}>
+                <button className="ghostButton dangerText" onClick={deleteSelected} disabled={loading}>
                   <Trash2 size={16} />
                   删除
                 </button>
               </div>
             </header>
 
-            {error && <div className="errorBox">{error}</div>}
-            {selected.last_error && <div className="warnBox"><AlertTriangle size={17} />{selected.last_error}</div>}
+            {error && (
+              <div className="errorBox">
+                <AlertTriangle size={17} />
+                {error}
+              </div>
+            )}
+            {selected.last_error && (
+              <div className="warnBox">
+                <AlertTriangle size={17} />
+                <span>上次同步发现异常：{selected.last_error}</span>
+              </div>
+            )}
 
             <nav className="tabs">
-              {tabs
-                .filter((item) => !item.hidden)
-                .map((item) => (
-                  <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => setTab(item.key)}>
-                    {item.icon}
-                    {item.label}
-                  </button>
-                ))}
+              {tabs.map((item) => (
+                <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => setTab(item.key)}>
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
             </nav>
 
             <section className="content">
-              {tab === 'overview' && overview && (
-                <>
-                  <div className="metricGrid">
-                    <div className="metric">
-                      <span>余额</span>
-                      <strong>{overview.latest_snapshot?.balance ?? '-'}</strong>
-                      <small>{overview.latest_snapshot?.unit || '原始单位'}</small>
-                    </div>
-                    <div className="metric">
-                      <span>已用</span>
-                      <strong>{overview.latest_snapshot?.used_balance ?? '-'}</strong>
-                      <small>最近同步</small>
-                    </div>
-                    <div className="metric">
-                      <span>同步时间</span>
-                      <strong>{formatTime(overview.channel.last_sync_at)}</strong>
-                      <small>{overview.channel.status}</small>
-                    </div>
-                  </div>
-                  <div className="chartPanel">
-                    <div className="sectionHeader">
-                      <h3>余额趋势</h3>
-                      <CheckCircle2 size={18} />
-                    </div>
-                    <BalanceChart history={overview.history} />
-                  </div>
-                  <div className="sectionHeader">
-                    <h3>账户资料</h3>
-                  </div>
-                  <JsonTable data={overview.profile ? [overview.profile] : []} />
-                  <div className="overviewDetails">
-                    <div>
-                      <div className="sectionHeader">
-                        <h3>分组</h3>
-                      </div>
-                      <JsonTable data={overview.groups} emptyText="暂无分组缓存" />
-                    </div>
-                    <div>
-                      <div className="sectionHeader">
-                        <h3>令牌</h3>
-                      </div>
-                      <JsonTable data={overview.tokens} emptyText="暂无令牌缓存" />
-                    </div>
-                  </div>
-                  {selected.type === 'sub2api' && (
-                    <>
-                      <div className="sectionHeader">
-                        <h3>当前订阅</h3>
-                      </div>
-                      <JsonTable data={overview.subscriptions} emptyText="暂无订阅缓存" />
-                    </>
-                  )}
-                </>
+              {tab === 'overview' &&
+                (loading && !overview ? (
+                  <LoadingState />
+                ) : overview ? (
+                  <OverviewPanel overview={overview} />
+                ) : (
+                  <EmptyPanel icon={<Database size={24} />} title="暂无概览数据，先执行一次同步" />
+                ))}
+              {tab === 'automation' && (
+                <AutomationPanel
+                  channel={selected}
+                  onAlertsChanged={() => {
+                    if (selectedId) return api.alerts(selectedId).then(setAlerts);
+                    return undefined;
+                  }}
+                />
               )}
-              {tab === 'automation' && <AutomationPanel channel={selected} onAlertsChanged={() => api.alerts(selected.id).then(setAlerts)} />}
-              {tab === 'alerts' && (
-                <div className="tableWrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>时间</th>
-                        <th>类型</th>
-                        <th>内容</th>
-                        <th>邮件</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {alerts.map((alert) => (
-                        <tr key={alert.id}>
-                          <td>{formatTime(alert.created_at)}</td>
-                          <td>{alert.type === 'low_balance' ? '低余额' : '消耗过快'}</td>
-                          <td>{alert.message}</td>
-                          <td>{alert.email_sent ? '已发送' : alert.email_error || '未发送'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {!alerts.length && <div className="emptyState">暂无告警记录</div>}
-                </div>
-              )}
+              {tab === 'alerts' && <AlertsPanel alerts={alerts} />}
             </section>
           </>
         ) : (
           <div className="blank">
             <Database size={42} />
             <h2>暂无渠道</h2>
+            <p>添加第一个 sub2api 或 new-api 渠道后，管理台会开始展示余额、同步状态和告警任务。</p>
             <button className="primaryButton" onClick={() => setChannelModal('new')}>
+              <Plus size={16} />
               添加渠道
             </button>
           </div>
