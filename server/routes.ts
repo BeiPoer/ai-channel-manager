@@ -6,7 +6,7 @@ import { normalizeBaseUrl, syncChannel } from './adapters.js';
 import { getChannel, getSetting, nowIso, parseJson, parseTask, sanitizeChannel, splitRecipients } from './db.js';
 import { getEmailSettings, saveEmailSettings, sendEmail } from './email.js';
 import { UpstreamError } from './http.js';
-import type { AutomationTaskRecord, ChannelRecord, ChannelType } from './types.js';
+import type { AutomationTaskRecord, AutomationTaskType, ChannelRecord, ChannelType } from './types.js';
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void> | void;
 
@@ -35,13 +35,25 @@ function listCache(db: DatabaseSync, channelId: number, key: string, fallback: u
   return parseJson(row?.normalized_json, fallback);
 }
 
+const taskTypes: AutomationTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed'];
+
+function isTaskType(value: unknown): value is AutomationTaskType {
+  return typeof value === 'string' && taskTypes.includes(value as AutomationTaskType);
+}
+
+function isGroupTaskType(value: unknown): boolean {
+  return value === 'group_added' || value === 'group_removed' || value === 'group_ratio_changed';
+}
+
 function taskPayload(body: Record<string, unknown>, partial = false) {
-  const type = body.type as string | undefined;
-  if (!partial && type !== 'low_balance' && type !== 'burn_rate') throw new UpstreamError('任务类型无效', 400);
+  const type = body.type;
+  if (!partial && !isTaskType(type)) throw new UpstreamError('任务类型无效', 400);
+  if (partial && type !== undefined && !isTaskType(type)) throw new UpstreamError('任务类型无效', 400);
   const threshold = body.threshold === undefined ? undefined : Number(body.threshold);
-  if (!partial && (threshold === undefined || !Number.isFinite(threshold))) throw new UpstreamError('预警阈值无效', 400);
+  if (!partial && !isGroupTaskType(type) && (threshold === undefined || !Number.isFinite(threshold))) throw new UpstreamError('预警阈值无效', 400);
+  if (threshold !== undefined && !Number.isFinite(threshold)) throw new UpstreamError('预警阈值无效', 400);
   return {
-    type,
+    type: type as AutomationTaskType | undefined,
     enabled: body.enabled === undefined ? undefined : Boolean(body.enabled) ? 1 : 0,
     interval_minutes: body.interval_minutes === undefined ? undefined : Math.max(1, Number(body.interval_minutes) || 30),
     threshold,
@@ -186,7 +198,7 @@ export function createApp(db: DatabaseSync): express.Express {
     const id = idParam(req);
     ensureChannel(db, id);
     const payload = taskPayload(req.body || {});
-    if (payload.threshold === undefined) throw new UpstreamError('预警阈值无效', 400);
+    if (!isGroupTaskType(payload.type) && payload.threshold === undefined) throw new UpstreamError('预警阈值无效', 400);
     const now = nowIso();
     const result = db.prepare(`
       INSERT INTO automation_tasks (
@@ -197,7 +209,7 @@ export function createApp(db: DatabaseSync): express.Express {
       payload.type || 'low_balance',
       payload.enabled ?? 1,
       payload.interval_minutes ?? (Number(getSetting(db, 'default_interval_minutes', '30')) || 30),
-      payload.threshold,
+      payload.threshold ?? 0,
       payload.lookback_minutes ?? 60,
       payload.cooldown_minutes ?? 60,
       payload.recipients_json ?? JSON.stringify([]),

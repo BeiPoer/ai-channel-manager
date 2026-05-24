@@ -1,6 +1,6 @@
 export type ChannelType = 'sub2api' | 'newapi';
 export type ChannelStatus = 'active' | 'error' | 'syncing';
-export type TaskType = 'low_balance' | 'burn_rate';
+export type TaskType = 'low_balance' | 'burn_rate' | 'group_added' | 'group_removed' | 'group_ratio_changed';
 
 export interface Channel {
   id: number;

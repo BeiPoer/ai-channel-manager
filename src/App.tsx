@@ -50,7 +50,10 @@ const statusCopy: Record<Channel['status'], { label: string; caption: string }> 
 
 const taskTypeCopy: Record<TaskType, string> = {
   low_balance: '低余额',
-  burn_rate: '消耗过快'
+  burn_rate: '消耗过快',
+  group_added: '新增分组',
+  group_removed: '减少分组',
+  group_ratio_changed: '倍率变化'
 };
 
 function formatTime(value: string | null | undefined, fallback = '-') {
@@ -98,6 +101,18 @@ function valuePreview(value: unknown): string {
 function credentialLabel(channel: Channel) {
   if (channel.type === 'sub2api') return channel.has_password ? '密码已保存' : '待配置密码';
   return channel.has_newapi_access_token ? '令牌已保存' : '待配置令牌';
+}
+
+function isGroupTaskType(type: TaskType) {
+  return type === 'group_added' || type === 'group_removed' || type === 'group_ratio_changed';
+}
+
+function taskSummary(task: AutomationTask) {
+  if (task.type === 'low_balance') return `余额 <= ${formatNumber(task.threshold)}`;
+  if (task.type === 'burn_rate') return `每小时消耗 >= ${formatNumber(task.threshold)}`;
+  if (task.type === 'group_added') return '发现新增分组时告警';
+  if (task.type === 'group_removed') return '发现减少分组时告警';
+  return '发现分组倍率变化时告警';
 }
 
 function StatusBadge({ status }: { status: Channel['status'] }) {
@@ -625,6 +640,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const isBurnRate = form.type === 'burn_rate';
+  const isGroupTask = isGroupTaskType(form.type);
 
   const load = () => {
     setLoading(true);
@@ -647,7 +663,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
     try {
       await api.createTask(channel.id, {
         ...form,
-        threshold: Number(form.threshold),
+        threshold: isGroupTask ? undefined : Number(form.threshold),
         recipients: form.recipients
       });
       setForm({ ...form, threshold: '', recipients: '' });
@@ -682,26 +698,41 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
   return (
     <div className="panelGrid">
       <form className="taskForm dataPanel" onSubmit={create}>
-        <SectionHeader title="新建自动化" description="按余额阈值或消耗速度触发邮件告警" icon={<Clock3 size={17} />} />
-        <div className="segmented">
+        <SectionHeader title="新建自动化" description="按余额、消耗速度或分组变化触发邮件告警" icon={<Clock3 size={17} />} />
+        <div className="segmented taskTypePicker">
           <button type="button" className={form.type === 'low_balance' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'low_balance' })}>
             低余额
           </button>
           <button type="button" className={form.type === 'burn_rate' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'burn_rate' })}>
             消耗过快
           </button>
+          <button type="button" className={form.type === 'group_added' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'group_added' })}>
+            新增分组
+          </button>
+          <button type="button" className={form.type === 'group_removed' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'group_removed' })}>
+            减少分组
+          </button>
+          <button
+            type="button"
+            className={form.type === 'group_ratio_changed' ? 'active' : ''}
+            onClick={() => setForm({ ...form, type: 'group_ratio_changed' })}
+          >
+            倍率变化
+          </button>
         </div>
-        <label>
-          {isBurnRate ? '每小时消耗超过' : '余额低于或等于'}
-          <input
-            required
-            type="number"
-            step="0.0001"
-            value={form.threshold}
-            onChange={(event) => setForm({ ...form, threshold: event.target.value })}
-            placeholder={isBurnRate ? '例如 50' : '例如 10'}
-          />
-        </label>
+        {!isGroupTask && (
+          <label>
+            {isBurnRate ? '每小时消耗超过' : '余额低于或等于'}
+            <input
+              required
+              type="number"
+              step="0.0001"
+              value={form.threshold}
+              onChange={(event) => setForm({ ...form, threshold: event.target.value })}
+              placeholder={isBurnRate ? '例如 50' : '例如 10'}
+            />
+          </label>
+        )}
         <div className={`formGrid ${isBurnRate ? 'three' : ''}`}>
           <label>
             检查间隔
@@ -734,9 +765,11 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
           </label>
         </div>
         <p className="fieldHint">
-          {isBurnRate
-            ? '按统计窗口内最早余额和最新余额计算消耗量，再折算成每小时消耗速度；充值或余额上涨不会触发。'
-            : '只判断最新余额快照；统计窗口不参与低余额判断。'}
+          {isGroupTask
+            ? '每次检查会同步渠道分组，并和上一次分组缓存对比；首次检查只建立基线，不触发告警。'
+            : isBurnRate
+              ? '按统计窗口内最早余额和最新余额计算消耗量，再折算成每小时消耗速度；充值或余额上涨不会触发。'
+              : '只判断最新余额快照；统计窗口不参与低余额判断。'}
         </p>
         <label>
           收件人
@@ -765,11 +798,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
               <div className="taskItem" key={task.id}>
                 <div className="taskSummary">
                   <span className={`taskType ${task.type}`}>{taskTypeCopy[task.type]}</span>
-                  <strong>
-                    {task.type === 'low_balance'
-                      ? `余额 <= ${formatNumber(task.threshold)}`
-                      : `每小时消耗 >= ${formatNumber(task.threshold)}`}
-                  </strong>
+                  <strong>{taskSummary(task)}</strong>
                   <p>
                     每 {task.interval_minutes} 分钟检查
                     {task.type === 'burn_rate' ? ` · 窗口 ${task.lookback_minutes} 分钟` : ''} · 冷却 {task.cooldown_minutes} 分钟

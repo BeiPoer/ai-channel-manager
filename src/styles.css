@@ -863,6 +863,10 @@ textarea:focus {
   box-shadow: 0 1px 2px rgba(23, 32, 51, 0.08);
 }
 
+.taskTypePicker {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .fieldHint {
   border-radius: 8px;
   background: var(--surface-muted);
@@ -934,6 +938,21 @@ textarea:focus {
 .taskType.burn_rate {
   background: var(--error-soft);
   color: var(--error);
+}
+
+.taskType.group_added {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.taskType.group_removed {
+  background: var(--surface-strong);
+  color: var(--primary-strong);
+}
+
+.taskType.group_ratio_changed {
+  background: var(--cyan-soft);
+  color: var(--cyan);
 }
 
 .emailState {

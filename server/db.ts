@@ -65,7 +65,7 @@ export function migrate(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS automation_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-      type TEXT NOT NULL CHECK (type IN ('low_balance', 'burn_rate')),
+      type TEXT NOT NULL CHECK (type IN ('low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed')),
       enabled INTEGER NOT NULL DEFAULT 1,
       interval_minutes INTEGER NOT NULL DEFAULT 30,
       threshold REAL NOT NULL,
@@ -95,6 +95,43 @@ export function migrate(db: DatabaseSync): void {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+  `);
+  migrateAutomationTaskTypes(db);
+}
+
+function migrateAutomationTaskTypes(db: DatabaseSync): void {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'automation_tasks'").get() as { sql: string } | undefined;
+  if (!table?.sql || table.sql.includes('group_ratio_changed')) return;
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN;
+    CREATE TABLE automation_tasks_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK (type IN ('low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      interval_minutes INTEGER NOT NULL DEFAULT 30,
+      threshold REAL NOT NULL,
+      lookback_minutes INTEGER NOT NULL DEFAULT 60,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+      recipients_json TEXT,
+      last_run_at TEXT,
+      last_alert_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO automation_tasks_new (
+      id, channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes,
+      recipients_json, last_run_at, last_alert_at, created_at, updated_at
+    )
+    SELECT
+      id, channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes,
+      recipients_json, last_run_at, last_alert_at, created_at, updated_at
+    FROM automation_tasks;
+    DROP TABLE automation_tasks;
+    ALTER TABLE automation_tasks_new RENAME TO automation_tasks;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
   `);
 }
 
