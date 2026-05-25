@@ -39,6 +39,7 @@ export const api = {
     request<Channel>(`/api/channels/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteChannel: (id: number) => request<void>(`/api/channels/${id}`, { method: 'DELETE' }),
   syncChannel: (id: number) => request<{ channel: Channel }>(`/api/channels/${id}/sync`, { method: 'POST' }),
+  upstreamLoginUrl: (id: number) => `/api/channels/${id}/upstream-login`,
   overview: (id: number) => request<Overview>(`/api/channels/${id}/overview`),
   groups: (id: number) => request<unknown[]>(`/api/channels/${id}/groups`),
   tokens: (id: number) => request<unknown[]>(`/api/channels/${id}/tokens`),

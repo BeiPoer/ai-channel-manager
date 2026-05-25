@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Copy,
+  ExternalLink,
   LogOut,
   RefreshCw,
   Search,
@@ -1032,6 +1033,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
 }
 
 function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; onOverviewChanged: (overview: Overview) => void }) {
+  const [message, setMessage] = useState<MessageState>(null);
   const snapshot = overview.latest_snapshot;
   const status = overview.channel.status;
   const lastSync = formatTime(overview.channel.last_sync_at, '尚未同步');
@@ -1043,6 +1045,18 @@ function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; on
     tokens: asRows(overview.tokens).length,
     subscriptions: activeSubscriptions.length
   };
+  const passwordText = overview.channel.password || '';
+
+  async function copySnapshotValue(label: string, value: string | null | undefined) {
+    if (!value) return;
+    setMessage(null);
+    try {
+      await copyText(value);
+      setMessage({ tone: 'success', text: `${label}已复制到剪贴板` });
+    } catch (err) {
+      setMessage({ tone: 'error', text: (err as Error).message || `${label}复制失败` });
+    }
+  }
 
   return (
     <>
@@ -1087,17 +1101,32 @@ function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; on
             </div>
             <div>
               <span>账号</span>
-              <strong>{overview.channel.username || '-'}</strong>
+              {overview.channel.username ? (
+                <button type="button" className="snapshotCopyButton" onClick={() => void copySnapshotValue('账号', overview.channel.username)}>
+                  <strong>{overview.channel.username}</strong>
+                  <Copy size={13} />
+                </button>
+              ) : (
+                <strong>-</strong>
+              )}
             </div>
             <div>
-              <span>认证</span>
-              <strong>{credentialLabel(overview.channel)}</strong>
+              <span>密码</span>
+              {passwordText ? (
+                <button type="button" className="snapshotCopyButton" onClick={() => void copySnapshotValue('密码', passwordText)}>
+                  <strong>{passwordText}</strong>
+                  <Copy size={13} />
+                </button>
+              ) : (
+                <strong>-</strong>
+              )}
             </div>
             <div>
               <span>更新时间</span>
               <strong>{formatShortTime(overview.channel.updated_at, '-')}</strong>
             </div>
           </div>
+          {message && <div className={`inlineNotice ${message.tone}`}>{message.text}</div>}
         </DataSection>
       </div>
 
@@ -1513,6 +1542,10 @@ export default function App() {
     }
   }
 
+  function openUpstreamLogin(channel: Channel) {
+    window.open(api.upstreamLoginUrl(channel.id), '_blank', 'noopener,noreferrer');
+  }
+
   async function deleteSelected() {
     if (!selected) return;
     const confirmed = window.confirm(`确定删除渠道「${selected.name}」吗？相关缓存和自动化配置也会被删除。`);
@@ -1644,6 +1677,12 @@ export default function App() {
                 </div>
               </div>
               <div className="toolbar">
+                {selected.type === 'sub2api' && (
+                  <button className="ghostButton" onClick={() => openUpstreamLogin(selected)}>
+                    <ExternalLink size={16} />
+                    进入上游
+                  </button>
+                )}
                 <button className="ghostButton" onClick={() => setChannelModal(selected)}>
                   <Pencil size={16} />
                   编辑

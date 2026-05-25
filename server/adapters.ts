@@ -63,6 +63,12 @@ function tokenIdOf(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function hasUsableSub2apiAccessToken(channel: ChannelRecord): boolean {
+  if (!channel.sub2api_access_token) return false;
+  if (!channel.sub2api_token_expires_at) return true;
+  return channel.sub2api_token_expires_at > Math.floor(Date.now() / 1000) + 60;
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
@@ -125,8 +131,27 @@ async function sub2apiRefresh(db: DatabaseSync, channel: ChannelRecord): Promise
   return { ...channel, sub2api_access_token: accessToken, sub2api_refresh_token: refreshToken, sub2api_token_expires_at: expiresAt };
 }
 
+async function ensureSub2apiAccess(db: DatabaseSync, channel: ChannelRecord, forceRefresh = false): Promise<ChannelRecord> {
+  if (forceRefresh && channel.sub2api_refresh_token) {
+    try {
+      return await sub2apiRefresh(db, channel);
+    } catch {
+      return sub2apiLogin(db, channel);
+    }
+  }
+  if (hasUsableSub2apiAccessToken(channel)) return channel;
+  if (channel.sub2api_refresh_token) {
+    try {
+      return await sub2apiRefresh(db, channel);
+    } catch {
+      return sub2apiLogin(db, channel);
+    }
+  }
+  return sub2apiLogin(db, channel);
+}
+
 async function sub2apiRequest(db: DatabaseSync, channel: ChannelRecord, path: string, init: RequestInit = {}, retry = true): Promise<unknown> {
-  const authed = channel.sub2api_access_token ? channel : await sub2apiLogin(db, channel);
+  const authed = await ensureSub2apiAccess(db, channel);
   try {
     const response = await requestJson(sub2apiUrl(authed, path), {
       ...init,
@@ -143,6 +168,30 @@ async function sub2apiRequest(db: DatabaseSync, channel: ChannelRecord, path: st
     }
     throw error;
   }
+}
+
+export async function createUpstreamLoginUrl(db: DatabaseSync, channelId: number): Promise<string> {
+  const channel = getChannel(db, channelId);
+  if (!channel) throw new UpstreamError('渠道不存在', 404);
+  if (channel.type !== 'sub2api') throw new UpstreamError('当前仅支持 sub2api 渠道自动登录', 400);
+
+  const authed = await ensureSub2apiAccess(db, channel, true);
+  if (!authed.sub2api_access_token) throw new UpstreamError('sub2api 登录成功但未返回 access_token', 502);
+
+  const fragment = new URLSearchParams({
+    access_token: authed.sub2api_access_token,
+    token_type: 'Bearer',
+    redirect: '/dashboard'
+  });
+  if (authed.sub2api_refresh_token) {
+    fragment.set('refresh_token', authed.sub2api_refresh_token);
+  }
+  if (authed.sub2api_token_expires_at) {
+    const expiresIn = Math.max(1, authed.sub2api_token_expires_at - Math.floor(Date.now() / 1000));
+    fragment.set('expires_in', String(expiresIn));
+  }
+
+  return `${authed.base_url}/auth/oauth/callback#${fragment.toString()}`;
 }
 
 async function fetchSub2apiTokens(db: DatabaseSync, channel: ChannelRecord): Promise<{ items: unknown[]; raw: unknown[] }> {

@@ -746,6 +746,40 @@ small,
   overflow-wrap: anywhere;
 }
 
+.snapshotCopyButton {
+  display: inline-flex;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.snapshotCopyButton strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snapshotCopyButton svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.snapshotCopyButton:hover strong {
+  text-decoration: underline;
+}
+
+.snapshotPanel .inlineNotice {
+  margin-top: 12px;
+}
+
 .tableWrap {
   overflow: auto;
   border: 1px solid var(--border-soft);

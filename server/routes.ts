@@ -2,7 +2,7 @@ import path from 'node:path';
 import compression from 'compression';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { DatabaseSync } from 'node:sqlite';
-import { normalizeBaseUrl, syncChannel, updateTokenGroup } from './adapters.js';
+import { createUpstreamLoginUrl, normalizeBaseUrl, syncChannel, updateTokenGroup } from './adapters.js';
 import { clearSessionCookie, isAuthenticated, requireAuth, setSessionCookie, verifyAccessPassword } from './auth.js';
 import type { AppConfig } from './config.js';
 import { getChannel, getSetting, nowIso, parseJson, parseTask, sanitizeChannel, splitRecipients } from './db.js';
@@ -166,6 +166,12 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const id = idParam(req);
     await syncChannel(db, id);
     res.json({ channel: sanitizeChannel(ensureChannel(db, id)) });
+  }));
+
+  app.get('/api/channels/:id/upstream-login', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const loginUrl = await createUpstreamLoginUrl(db, id);
+    res.redirect(302, loginUrl);
   }));
 
   app.get('/api/channels/:id/overview', (req, res) => {
