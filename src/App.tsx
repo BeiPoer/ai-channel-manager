@@ -10,6 +10,7 @@ import {
   Mail,
   Pencil,
   Plus,
+  Copy,
   LogOut,
   RefreshCw,
   Search,
@@ -32,6 +33,11 @@ type MessageState = {
   tone: 'success' | 'error';
   text: string;
 } | null;
+
+type GroupOption = {
+  value: string;
+  label: string;
+};
 
 const emptyEmail: EmailSettings = {
   smtp_host: '',
@@ -56,6 +62,214 @@ const taskTypeCopy: Record<TaskType, string> = {
   group_removed: '减少分组',
   group_ratio_changed: '倍率变化'
 };
+
+const columnLabels: Record<string, string> = {
+  id: 'ID',
+  ID: 'ID',
+  name: '名称',
+  key: '密钥',
+  value: '值',
+  email: '邮箱',
+  username: '账号',
+  user_id: '用户 ID',
+  role: '角色',
+  balance: '余额',
+  used_balance: '已用余额',
+  total_recharged: '累计充值',
+  quota: '额度',
+  used_quota: '已用额度',
+  quota_used: '已用额度',
+  remain_quota: '剩余额度',
+  status: '状态',
+  active: '启用',
+  summary: '摘要',
+  group: '分组',
+  group_id: '分组 ID',
+  groupId: '分组 ID',
+  allowed_groups: '允许分组',
+  ratio: '倍率',
+  rate: '倍率',
+  rate_multiplier: '倍率',
+  rpm_limit: 'RPM 限制',
+  concurrency: '并发数',
+  run_mode: '运行模式',
+  user_group: '用户分组',
+  platform: '平台',
+  description: '描述',
+  type: '类型',
+  plan: '套餐',
+  subscription_type: '订阅类型',
+  active_count: '活跃数',
+  total: '总数',
+  count: '数量',
+  items: '项目',
+  created_at: '创建时间',
+  updated_at: '更新时间',
+  expires_at: '过期时间',
+  expired_time: '过期时间',
+  last_active_at: '最近活跃',
+  last_used_at: '最近使用',
+  accessed_time: '最近访问',
+  created_time: '创建时间',
+  ip_whitelist: 'IP 白名单',
+  ip_blacklist: 'IP 黑名单',
+  identities: '身份',
+  identity_bindings: '身份绑定',
+  auth_bindings: '认证绑定',
+  email_bound: '邮箱绑定',
+  dingtalk_bound: '钉钉绑定',
+  wechat_bound: '微信绑定',
+  linuxdo_bound: 'LinuxDO 绑定',
+  oidc_bound: 'OIDC 绑定',
+  balance_notify_enabled: '余额通知',
+  balance_notify_threshold: '余额通知阈值',
+  balance_notify_threshold_type: '余额通知阈值类型',
+  balance_notify_extra_emails: '余额通知额外邮箱',
+  allow_image_generation: '允许生图',
+  allow_messages_dispatch: '允许消息调度',
+  claude_code_only: '仅 Claude Code',
+  daily_limit_usd: '每日限额',
+  weekly_limit_usd: '每周限额',
+  monthly_limit_usd: '每月限额',
+  fallback_group_id: '备用分组 ID',
+  fallback_group_id_on_invalid_request: '无效请求备用分组 ID',
+  image_price_1k: '图片 1K 价格',
+  image_price_2k: '图片 2K 价格',
+  image_price_4k: '图片 4K 价格',
+  image_rate_independent: '图片独立倍率',
+  image_rate_multiplier: '图片倍率',
+  is_exclusive: '专属分组',
+  require_oauth_only: '仅 OAuth',
+  require_privacy_set: '要求隐私设置',
+  unlimited_quota: '不限额度',
+  model_limits_enabled: '模型限制',
+  model_limits: '模型列表',
+  allow_ips: '允许 IP',
+  cross_group_retry: '跨组重试',
+  rate_limit_5h: '5 小时限速',
+  rate_limit_1d: '1 日限速',
+  rate_limit_7d: '7 日限速',
+  usage_5h: '5 小时用量',
+  usage_1d: '1 日用量',
+  usage_7d: '7 日用量',
+  window_5h_start: '5 小时窗口开始',
+  window_1d_start: '1 日窗口开始',
+  window_7d_start: '7 日窗口开始',
+  raw: '原始数据',
+  error: '错误',
+  message: '消息'
+};
+
+const labelTokenMap: Record<string, string> = {
+  active: '活跃',
+  allow: '允许',
+  allowed: '允许',
+  balance: '余额',
+  blacklist: '黑名单',
+  bindings: '绑定',
+  bound: '绑定',
+  claude: 'Claude',
+  code: 'Code',
+  concurrency: '并发',
+  count: '数量',
+  created: '创建',
+  cross: '跨',
+  daily: '每日',
+  description: '描述',
+  dispatch: '调度',
+  email: '邮箱',
+  enabled: '启用',
+  error: '错误',
+  exclusive: '专属',
+  expired: '过期',
+  expires: '过期',
+  extra: '额外',
+  fallback: '备用',
+  generation: '生成',
+  group: '分组',
+  groups: '分组',
+  id: 'ID',
+  identities: '身份',
+  identity: '身份',
+  image: '图片',
+  independent: '独立',
+  invalid: '无效',
+  ip: 'IP',
+  key: '密钥',
+  last: '最近',
+  limit: '限制',
+  linuxdo: 'LinuxDO',
+  messages: '消息',
+  mode: '模式',
+  monthly: '每月',
+  name: '名称',
+  notify: '通知',
+  oauth: 'OAuth',
+  oidc: 'OIDC',
+  only: '仅',
+  platform: '平台',
+  price: '价格',
+  privacy: '隐私',
+  quota: '额度',
+  rate: '倍率',
+  recharged: '充值',
+  remain: '剩余',
+  request: '请求',
+  require: '要求',
+  retry: '重试',
+  role: '角色',
+  rpm: 'RPM',
+  run: '运行',
+  start: '开始',
+  status: '状态',
+  subscription: '订阅',
+  threshold: '阈值',
+  time: '时间',
+  total: '累计',
+  type: '类型',
+  updated: '更新',
+  usage: '用量',
+  used: '已用',
+  user: '用户',
+  weekly: '每周',
+  whitelist: '白名单',
+  window: '窗口'
+};
+
+const tableValueLabels: Record<string, string> = {
+  active: '启用',
+  inactive: '停用',
+  disabled: '禁用',
+  enabled: '启用',
+  expired: '已过期',
+  quota_exhausted: '额度耗尽',
+  exhausted: '已耗尽',
+  pending: '待处理',
+  error: '异常',
+  success: '成功',
+  failed: '失败',
+  standard: '标准',
+  premium: '高级',
+  trial: '试用',
+  free: '免费',
+  user: '用户',
+  admin: '管理员',
+  owner: '所有者',
+  root: '超级管理员',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+  auto: '自动'
+};
+
+const translatedValueColumns = new Set([
+  'status',
+  'role',
+  'subscription_type',
+  'platform',
+  'type',
+  'run_mode'
+]);
 
 function formatTime(value: string | null | undefined, fallback = '-') {
   if (!value) return fallback;
@@ -93,10 +307,132 @@ function asRows(data: unknown): Record<string, unknown>[] {
   return [];
 }
 
+function subscriptionRows(data: unknown): Record<string, unknown>[] {
+  if (isRecord(data) && 'active' in data) return asRows(data.active);
+  return asRows(data);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 function valuePreview(value: unknown): string {
   if (value === null || value === undefined) return '-';
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
   return JSON.stringify(value);
+}
+
+function displayValue(column: string, value: unknown): string {
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value === 'string' && translatedValueColumns.has(column)) {
+    return tableValueLabels[value.toLowerCase()] || value;
+  }
+  return valuePreview(value);
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand('copy')) throw new Error('复制失败');
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+function columnLabel(column: string): string {
+  if (columnLabels[column]) return columnLabels[column];
+  return column
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => labelTokenMap[part.toLowerCase()] || part.toUpperCase())
+    .join(' ');
+}
+
+function tokenIdOf(row: Record<string, unknown>): number | null {
+  const parsed = Number(row.id ?? row.ID);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function groupNameFrom(value: unknown): string {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (isRecord(value)) return String(value.name ?? value.id ?? '').trim();
+  return '';
+}
+
+function groupIdFrom(row: Record<string, unknown>): string {
+  const direct = row.group_id ?? row.groupId;
+  if (direct !== null && direct !== undefined && String(direct).trim() !== '') return String(direct);
+  if (isRecord(row.group)) {
+    const groupId = row.group.id ?? row.group.ID;
+    if (groupId !== null && groupId !== undefined && String(groupId).trim() !== '') return String(groupId);
+  }
+  return '';
+}
+
+function appendUniqueOption(options: GroupOption[], option: GroupOption) {
+  if (!option.value || options.some((item) => item.value === option.value)) return options;
+  return [...options, option];
+}
+
+function tokenGroupOptions(overview: Overview, rows: Record<string, unknown>[]): GroupOption[] {
+  const groups = asRows(overview.groups);
+  let options: GroupOption[] = [];
+  if (overview.channel.type === 'sub2api') {
+    for (const group of groups) {
+      const id = group.id ?? group.ID ?? group.group_id;
+      if (id === null || id === undefined || String(id).trim() === '') continue;
+      const label = groupNameFrom(group.name ?? group.display_name ?? group.title ?? id);
+      options = appendUniqueOption(options, { value: String(id), label: label || String(id) });
+    }
+    for (const row of rows) {
+      const value = groupIdFrom(row);
+      if (!value) continue;
+      const label = isRecord(row.group) ? groupNameFrom(row.group.name ?? value) : value;
+      options = appendUniqueOption(options, { value, label: label || value });
+    }
+    return options;
+  }
+
+  options = [{ value: '', label: '默认分组' }];
+  for (const group of groups) {
+    const name = groupNameFrom(group.name ?? group.group ?? group.value);
+    if (!name) continue;
+    options = appendUniqueOption(options, { value: name, label: name });
+  }
+  for (const row of rows) {
+    const name = groupNameFrom(row.group);
+    if (!name) continue;
+    options = appendUniqueOption(options, { value: name, label: name });
+  }
+  return options;
+}
+
+function currentTokenGroupValue(channelType: ChannelType, row: Record<string, unknown>): string {
+  return channelType === 'sub2api' ? groupIdFrom(row) : groupNameFrom(row.group);
+}
+
+function tokenColumns(rows: Record<string, unknown>[]) {
+  const keys = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  const visibleColumns = [
+    'id',
+    'name',
+    'key',
+    'status',
+    'remain_quota',
+    'used_quota',
+    'expired_time'
+  ];
+  return visibleColumns.filter((key) => keys.includes(key));
 }
 
 function credentialLabel(channel: Channel) {
@@ -530,7 +866,7 @@ function JsonTable({ data, emptyText = '暂无数据' }: { data: unknown; emptyT
         <thead>
           <tr>
             {columns.map((column) => (
-              <th key={column}>{column}</th>
+              <th key={column}>{columnLabel(column)}</th>
             ))}
           </tr>
         </thead>
@@ -539,7 +875,7 @@ function JsonTable({ data, emptyText = '暂无数据' }: { data: unknown; emptyT
             <tr key={index}>
               {columns.map((column) => (
                 <td key={column} title={valuePreview(row[column])}>
-                  {valuePreview(row[column])}
+                  {displayValue(column, row[column])}
                 </td>
               ))}
             </tr>
@@ -581,14 +917,131 @@ function BalanceChart({ history }: { history: Overview['history'] }) {
   );
 }
 
-function OverviewPanel({ overview }: { overview: Overview }) {
+function TokenTable({ overview, onTokensChanged }: { overview: Overview; onTokensChanged: (tokens: unknown[]) => void }) {
+  const rows = asRows(overview.tokens);
+  const columns = tokenColumns(rows);
+  const leadingColumns = columns.slice(0, 4);
+  const trailingColumns = columns.slice(4);
+  const options = tokenGroupOptions(overview, rows);
+  const [updatingTokenId, setUpdatingTokenId] = useState<number | null>(null);
+  const [message, setMessage] = useState<MessageState>(null);
+
+  if (!rows.length) return <div className="emptyState">暂无令牌缓存</div>;
+
+  async function changeGroup(row: Record<string, unknown>, nextValue: string) {
+    const tokenId = tokenIdOf(row);
+    if (!tokenId) return;
+    setUpdatingTokenId(tokenId);
+    setMessage(null);
+    try {
+      const payload = overview.channel.type === 'sub2api' ? { group_id: Number(nextValue) } : { group: nextValue };
+      const result = await api.updateTokenGroup(overview.channel.id, tokenId, payload);
+      onTokensChanged(result.tokens);
+      setMessage({ tone: 'success', text: '令牌分组已更新' });
+    } catch (err) {
+      setMessage({ tone: 'error', text: (err as Error).message });
+    } finally {
+      setUpdatingTokenId(null);
+    }
+  }
+
+  async function copyKey(value: unknown) {
+    const text = valuePreview(value);
+    if (!text || text === '-') return;
+    setMessage(null);
+    try {
+      await copyText(text);
+      setMessage({ tone: 'success', text: '密钥已复制到剪贴板' });
+    } catch (err) {
+      setMessage({ tone: 'error', text: (err as Error).message || '密钥复制失败' });
+    }
+  }
+
+  function renderTokenCell(row: Record<string, unknown>, column: string) {
+    const preview = valuePreview(row[column]);
+    if (column === 'key') {
+      return (
+        <td key={column} title={preview}>
+          <button type="button" className="copyKeyButton" onClick={() => void copyKey(row[column])}>
+            <span>{displayValue(column, row[column])}</span>
+            <Copy size={14} />
+          </button>
+        </td>
+      );
+    }
+    return (
+      <td key={column} title={preview}>
+        {displayValue(column, row[column])}
+      </td>
+    );
+  }
+
+  return (
+    <div className="tokenTableStack">
+      {message && <div className={`inlineNotice ${message.tone}`}>{message.text}</div>}
+      <div className="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              {leadingColumns.map((column) => (
+                <th key={column}>{columnLabel(column)}</th>
+              ))}
+              <th className="tokenGroupColumn">分组</th>
+              {trailingColumns.map((column) => (
+                <th key={column}>{columnLabel(column)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => {
+              const tokenId = tokenIdOf(row);
+              const currentValue = currentTokenGroupValue(overview.channel.type, row);
+              const disabled = !tokenId || !options.length || updatingTokenId === tokenId;
+              const displayedOptions = currentValue
+                ? appendUniqueOption(options, { value: currentValue, label: currentValue })
+                : options;
+              return (
+                <tr key={tokenId ?? index}>
+                  {leadingColumns.map((column) => renderTokenCell(row, column))}
+                  <td className="tokenGroupColumn">
+                    <select
+                      className="tokenGroupSelect"
+                      value={currentValue}
+                      disabled={disabled}
+                      onChange={(event) => void changeGroup(row, event.target.value)}
+                      aria-label="令牌分组"
+                      title={displayedOptions.find((option) => option.value === currentValue)?.label || currentValue || '未设置'}
+                    >
+                      {overview.channel.type === 'sub2api' && !currentValue && <option value="">未设置</option>}
+                      {displayedOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  {trailingColumns.map((column) => renderTokenCell(row, column))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; onOverviewChanged: (overview: Overview) => void }) {
   const snapshot = overview.latest_snapshot;
   const status = overview.channel.status;
   const lastSync = formatTime(overview.channel.last_sync_at, '尚未同步');
+  const activeSubscriptions = subscriptionRows(overview.subscriptions);
+  const profile = overview.profile || {};
+  const concurrency = typeof profile.concurrency === 'number' ? profile.concurrency : Number(profile.concurrency);
   const dataCount = {
     groups: asRows(overview.groups).length,
     tokens: asRows(overview.tokens).length,
-    subscriptions: asRows(overview.subscriptions).length
+    subscriptions: activeSubscriptions.length
   };
 
   return (
@@ -597,15 +1050,15 @@ function OverviewPanel({ overview }: { overview: Overview }) {
         <MetricCard
           label="当前余额"
           value={formatNumber(snapshot?.balance)}
-          meta={snapshot?.unit || '原始单位'}
+          meta={snapshot ? '' : '等待首次同步'}
           icon={<WalletCards size={18} />}
           tone="accent"
         />
         <MetricCard
-          label="已用余额"
-          value={formatNumber(snapshot?.used_balance)}
-          meta={snapshot ? `采集于 ${formatShortTime(snapshot.captured_at, '-')}` : '等待首次同步'}
-          icon={<CircleDollarSign size={18} />}
+          label="并发数"
+          value={Number.isFinite(concurrency) ? formatNumber(concurrency) : '-'}
+          meta=""
+          icon={<Activity size={18} />}
         />
         <MetricCard
           label="渠道健康"
@@ -622,7 +1075,6 @@ function OverviewPanel({ overview }: { overview: Overview }) {
           title="余额趋势"
           description={`最近 ${overview.history.slice(-30).length} 个快照`}
           icon={<Activity size={17} />}
-          right={<span className="dataPill">{snapshot?.unit || 'unit'}</span>}
         >
           <BalanceChart history={overview.history} />
         </DataSection>
@@ -658,7 +1110,7 @@ function OverviewPanel({ overview }: { overview: Overview }) {
           <JsonTable data={overview.groups} emptyText="暂无分组缓存" />
         </DataSection>
         <DataSection title="令牌" description="同步缓存" icon={<KeyRound size={17} />} right={<span className="dataPill">{dataCount.tokens} 项</span>}>
-          <JsonTable data={overview.tokens} emptyText="暂无令牌缓存" />
+          <TokenTable overview={overview} onTokensChanged={(tokens) => onOverviewChanged({ ...overview, tokens })} />
         </DataSection>
       </div>
 
@@ -669,7 +1121,7 @@ function OverviewPanel({ overview }: { overview: Overview }) {
           icon={<Zap size={17} />}
           right={<span className="dataPill">{dataCount.subscriptions} 项</span>}
         >
-          <JsonTable data={overview.subscriptions} emptyText="暂无订阅缓存" />
+          <JsonTable data={activeSubscriptions} emptyText="当前无订阅" />
         </DataSection>
       )}
     </>
@@ -1234,7 +1686,7 @@ export default function App() {
                 (loading && !overview ? (
                   <LoadingState />
                 ) : overview ? (
-                  <OverviewPanel overview={overview} />
+                  <OverviewPanel overview={overview} onOverviewChanged={setOverview} />
                 ) : (
                   <EmptyPanel icon={<Database size={24} />} title="暂无概览数据，先执行一次同步" />
                 ))}

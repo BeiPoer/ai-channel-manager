@@ -42,6 +42,11 @@ export const api = {
   overview: (id: number) => request<Overview>(`/api/channels/${id}/overview`),
   groups: (id: number) => request<unknown[]>(`/api/channels/${id}/groups`),
   tokens: (id: number) => request<unknown[]>(`/api/channels/${id}/tokens`),
+  updateTokenGroup: (channelId: number, tokenId: number, payload: { group?: string; group_id?: number }) =>
+    request<{ channel: Channel; token: unknown; tokens: unknown[] }>(`/api/channels/${channelId}/tokens/${tokenId}/group`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    }),
   subscriptions: (id: number) => request<unknown>(`/api/channels/${id}/subscriptions`),
   tasks: (id: number) => request<AutomationTask[]>(`/api/channels/${id}/tasks`),
   createTask: (id: number, payload: Record<string, unknown>) =>

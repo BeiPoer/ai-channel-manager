@@ -791,6 +791,85 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+.tokenTableStack {
+  display: grid;
+  gap: 10px;
+}
+
+.tokenGroupSelect {
+  width: 100%;
+  min-width: 172px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tokenGroupSelect:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.tokenGroupColumn {
+  width: 196px;
+  min-width: 196px;
+  max-width: 196px;
+}
+
+.copyKeyButton {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--primary-strong);
+  padding: 0;
+  text-align: left;
+}
+
+.copyKeyButton span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyKeyButton svg {
+  flex: 0 0 auto;
+}
+
+.copyKeyButton:hover span {
+  text-decoration: underline;
+}
+
+.inlineNotice {
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.inlineNotice.success {
+  border: 1px solid #bbf7d0;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.inlineNotice.error {
+  border: 1px solid #fecaca;
+  background: var(--error-soft);
+  color: var(--error);
+}
+
 .panelGrid {
   display: grid;
   grid-template-columns: minmax(320px, 392px) minmax(0, 1fr);

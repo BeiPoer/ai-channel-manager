@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { getChannel, nowIso, setChannelSyncStatus } from './db.js';
+import { getChannel, nowIso, parseJson, setChannelSyncStatus } from './db.js';
 import { extractMessage, requestJson, UpstreamError } from './http.js';
 import type { CacheKey, ChannelRecord, SyncResult } from './types.js';
 
@@ -7,6 +7,11 @@ interface PageResult {
   items: unknown[];
   total: number | null;
 }
+
+export type TokenGroupUpdatePayload = {
+  group?: unknown;
+  group_id?: unknown;
+};
 
 export function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim();
@@ -46,6 +51,20 @@ function unwrapNewApi(payload: unknown): unknown {
 function asNumber(value: unknown, fallback = 0): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function tokenIdOf(value: unknown): number | null {
+  if (!isRecord(value)) return null;
+  const parsed = Number(value.id ?? value.ID);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
 
 function extractPage(payload: unknown): PageResult {
@@ -106,17 +125,21 @@ async function sub2apiRefresh(db: DatabaseSync, channel: ChannelRecord): Promise
   return { ...channel, sub2api_access_token: accessToken, sub2api_refresh_token: refreshToken, sub2api_token_expires_at: expiresAt };
 }
 
-async function sub2apiRequest(db: DatabaseSync, channel: ChannelRecord, path: string, retry = true): Promise<unknown> {
+async function sub2apiRequest(db: DatabaseSync, channel: ChannelRecord, path: string, init: RequestInit = {}, retry = true): Promise<unknown> {
   const authed = channel.sub2api_access_token ? channel : await sub2apiLogin(db, channel);
   try {
     const response = await requestJson(sub2apiUrl(authed, path), {
-      headers: { Authorization: `Bearer ${authed.sub2api_access_token}` }
+      ...init,
+      headers: {
+        Authorization: `Bearer ${authed.sub2api_access_token}`,
+        ...(init.headers || {})
+      }
     });
     return unwrapSub2api(response.data);
   } catch (error) {
     if (retry && error instanceof UpstreamError && error.status === 401) {
       const refreshed = await sub2apiRefresh(db, authed);
-      return sub2apiRequest(db, refreshed, path, false);
+      return sub2apiRequest(db, refreshed, path, init, false);
     }
     throw error;
   }
@@ -165,14 +188,16 @@ async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<Sy
   };
 }
 
-async function newApiRequest(channel: ChannelRecord, path: string): Promise<unknown> {
+async function newApiRequest(channel: ChannelRecord, path: string, init: RequestInit = {}): Promise<unknown> {
   if (!channel.newapi_access_token || !channel.newapi_user_id) {
     throw new UpstreamError('new-api 渠道需要系统访问令牌和 userId', 400);
   }
   const response = await requestJson(newApiUrl(channel, path), {
+    ...init,
     headers: {
       Authorization: `Bearer ${channel.newapi_access_token}`,
-      'New-Api-User': channel.newapi_user_id
+      'New-Api-User': channel.newapi_user_id,
+      ...(init.headers || {})
     }
   });
   return unwrapNewApi(response.data);
@@ -225,6 +250,93 @@ function upsertCache(db: DatabaseSync, channelId: number, key: CacheKey, raw: un
   `).run(channelId, key, JSON.stringify(raw ?? null), JSON.stringify(normalized ?? null), nowIso());
 }
 
+function cachedTokens(db: DatabaseSync, channelId: number): unknown[] {
+  const row = db.prepare('SELECT normalized_json FROM channel_cache WHERE channel_id = ? AND cache_key = ?').get(channelId, 'tokens') as
+    | { normalized_json: string }
+    | undefined;
+  return parseJson<unknown[]>(row?.normalized_json, []);
+}
+
+function updateTokenCache(db: DatabaseSync, channelId: number, updatedToken: unknown): unknown[] {
+  const currentRows = cachedTokens(db, channelId);
+  const updatedId = tokenIdOf(updatedToken);
+  const nextRows =
+    updatedId === null
+      ? currentRows
+      : currentRows.some((item) => tokenIdOf(item) === updatedId)
+        ? currentRows.map((item) => (tokenIdOf(item) === updatedId ? updatedToken : item))
+        : [updatedToken, ...currentRows];
+  upsertCache(db, channelId, 'tokens', nextRows, nextRows);
+  return nextRows;
+}
+
+async function refreshTokenCache(db: DatabaseSync, channel: ChannelRecord): Promise<unknown[]> {
+  const latestChannel = getChannel(db, channel.id) || channel;
+  const tokens = latestChannel.type === 'sub2api' ? await fetchSub2apiTokens(db, latestChannel) : await fetchNewApiTokens(latestChannel);
+  upsertCache(db, channel.id, 'tokens', tokens.raw, tokens.items);
+  return tokens.items;
+}
+
+async function sub2apiTokenDetail(db: DatabaseSync, channel: ChannelRecord, tokenId: number): Promise<{ path: string; token: Record<string, unknown> }> {
+  const paths = ['/keys', '/api-keys'];
+  let lastError: unknown = null;
+  for (const path of paths) {
+    try {
+      const token = await sub2apiRequest(db, channel, `${path}/${tokenId}`);
+      if (!isRecord(token)) throw new UpstreamError('sub2api 令牌详情格式异常', 502, token);
+      return { path, token };
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof UpstreamError) || error.status !== 404) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new UpstreamError('无法读取 sub2api 令牌详情', 502);
+}
+
+async function updateSub2apiTokenGroup(db: DatabaseSync, channel: ChannelRecord, tokenId: number, payload: TokenGroupUpdatePayload): Promise<unknown> {
+  const groupId = Number(payload.group_id);
+  if (!Number.isInteger(groupId) || groupId <= 0) throw new UpstreamError('sub2api 分组 ID 无效', 400);
+
+  const { path, token } = await sub2apiTokenDetail(db, channel, tokenId);
+  const updated = await sub2apiRequest(db, channel, `${path}/${tokenId}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      group_id: groupId,
+      ip_whitelist: stringArray(token.ip_whitelist),
+      ip_blacklist: stringArray(token.ip_blacklist)
+    })
+  });
+  return updated;
+}
+
+function requireNewApiTokenField(token: Record<string, unknown>, key: string): unknown {
+  if (!(key in token)) throw new UpstreamError(`new-api 令牌详情缺少 ${key}，无法安全更新分组`, 502, token);
+  return token[key];
+}
+
+async function updateNewApiTokenGroup(channel: ChannelRecord, tokenId: number, payload: TokenGroupUpdatePayload): Promise<unknown> {
+  const group = payload.group === undefined || payload.group === null ? '' : String(payload.group);
+  const token = await newApiRequest(channel, `/token/${tokenId}`);
+  if (!isRecord(token)) throw new UpstreamError('new-api 令牌详情格式异常', 502, token);
+
+  const updated = await newApiRequest(channel, '/token/', {
+    method: 'PUT',
+    body: JSON.stringify({
+      id: asNumber(token.id, tokenId),
+      name: requireNewApiTokenField(token, 'name'),
+      expired_time: requireNewApiTokenField(token, 'expired_time'),
+      remain_quota: requireNewApiTokenField(token, 'remain_quota'),
+      unlimited_quota: Boolean(requireNewApiTokenField(token, 'unlimited_quota')),
+      model_limits_enabled: Boolean(requireNewApiTokenField(token, 'model_limits_enabled')),
+      model_limits: requireNewApiTokenField(token, 'model_limits'),
+      allow_ips: requireNewApiTokenField(token, 'allow_ips'),
+      group,
+      cross_group_retry: Boolean(requireNewApiTokenField(token, 'cross_group_retry'))
+    })
+  });
+  return updated;
+}
+
 function persistSyncResult(db: DatabaseSync, channel: ChannelRecord, result: SyncResult): void {
   upsertCache(db, channel.id, 'profile', result.raw.profile ?? result.profile, result.profile);
   upsertCache(db, channel.id, 'groups', result.raw.groups ?? result.groups, result.groups);
@@ -264,6 +376,20 @@ export async function syncChannel(db: DatabaseSync, channelId: number): Promise<
   }
 }
 
+export async function updateTokenGroup(
+  db: DatabaseSync,
+  channelId: number,
+  tokenId: number,
+  payload: TokenGroupUpdatePayload
+): Promise<{ token: unknown; tokens: unknown[] }> {
+  const channel = getChannel(db, channelId);
+  if (!channel) throw new UpstreamError('渠道不存在', 404);
+  const token = channel.type === 'sub2api' ? await updateSub2apiTokenGroup(db, channel, tokenId, payload) : await updateNewApiTokenGroup(channel, tokenId, payload);
+  const cached = updateTokenCache(db, channel.id, token);
+  const tokens = await refreshTokenCache(db, channel).catch(() => cached);
+  return { token, tokens };
+}
+
 export const adapterInternals = {
   unwrapSub2api,
   unwrapNewApi,
@@ -271,4 +397,3 @@ export const adapterInternals = {
   syncSub2api,
   syncNewApi
 };
-

@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { syncChannel } from './adapters.js';
+import { syncChannel, updateTokenGroup } from './adapters.js';
 import { createDatabase, nowIso } from './db.js';
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void;
@@ -114,5 +114,104 @@ describe('channel adapters', () => {
     expect(snapshot.used_balance).toBe(8);
     db.close();
   });
-});
 
+  it('updates a sub2api token group without clearing IP rules', async () => {
+    let updateBody: Record<string, unknown> | null = null;
+    const baseUrl = await startMock((req, res, url) => {
+      if (url.pathname === '/api/v1/auth/login') return json(res, 200, { code: 0, data: { access_token: 'access-a', refresh_token: 'refresh-a' } });
+      if (req.headers.authorization !== 'Bearer access-a') return json(res, 401, { message: 'unauthorized' });
+      if (url.pathname === '/api/v1/keys/9' && req.method === 'GET') {
+        return json(res, 200, { code: 0, data: { id: 9, name: 'key-a', group_id: 1, ip_whitelist: ['1.1.1.1'], ip_blacklist: ['2.2.2.2'] } });
+      }
+      if (url.pathname === '/api/v1/keys/9' && req.method === 'PUT') {
+        let raw = '';
+        req.on('data', (chunk) => {
+          raw += String(chunk);
+        });
+        req.on('end', () => {
+          updateBody = JSON.parse(raw);
+          json(res, 200, { code: 0, data: { id: 9, name: 'key-a', group_id: updateBody?.group_id } });
+        });
+        return;
+      }
+      if (url.pathname === '/api/v1/keys') return json(res, 200, { code: 0, data: { items: [{ id: 9, group_id: 2 }], total: 1 } });
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES ('s', 'sub2api', ?, 'u@example.com', 'pw', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    const updated = await updateTokenGroup(db, Number(result.lastInsertRowid), 9, { group_id: 2 });
+
+    expect(updateBody).toEqual({ group_id: 2, ip_whitelist: ['1.1.1.1'], ip_blacklist: ['2.2.2.2'] });
+    expect(updated.tokens).toEqual([{ id: 9, group_id: 2 }]);
+    db.close();
+  });
+
+  it('updates a new-api token group while preserving editable fields', async () => {
+    let updateBody: Record<string, unknown> | null = null;
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
+      if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
+      if (url.pathname === '/api/token/11') {
+        return json(res, 200, {
+          success: true,
+          data: {
+            id: 11,
+            name: 'token-a',
+            expired_time: -1,
+            remain_quota: 123,
+            unlimited_quota: false,
+            model_limits_enabled: true,
+            model_limits: 'gpt-4o',
+            allow_ips: '1.1.1.1',
+            group: 'default',
+            cross_group_retry: true
+          }
+        });
+      }
+      if (url.pathname === '/api/token/' && req.method === 'PUT') {
+        let raw = '';
+        req.on('data', (chunk) => {
+          raw += String(chunk);
+        });
+        req.on('end', () => {
+          updateBody = JSON.parse(raw);
+          json(res, 200, { success: true, data: { ...updateBody } });
+        });
+        return;
+      }
+      if (url.pathname === '/api/token/' && req.method === 'GET') {
+        return json(res, 200, { success: true, data: { items: [{ id: 11, group: 'vip' }], total: 1 } });
+      }
+      return json(res, 404, { success: false, message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'p', 'system-token', '42', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    const updated = await updateTokenGroup(db, Number(result.lastInsertRowid), 11, { group: 'vip' });
+
+    expect(updateBody).toEqual({
+      id: 11,
+      name: 'token-a',
+      expired_time: -1,
+      remain_quota: 123,
+      unlimited_quota: false,
+      model_limits_enabled: true,
+      model_limits: 'gpt-4o',
+      allow_ips: '1.1.1.1',
+      group: 'vip',
+      cross_group_retry: true
+    });
+    expect(updated.tokens).toEqual([{ id: 11, group: 'vip' }]);
+    db.close();
+  });
+});
