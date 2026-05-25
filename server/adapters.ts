@@ -8,10 +8,19 @@ interface PageResult {
   total: number | null;
 }
 
+interface NewApiQuotaConversion {
+  displayType: 'USD' | 'CNY' | 'TOKENS' | 'CUSTOM';
+  quotaPerUnit: number;
+  rate: number;
+  unit: string;
+}
+
 export type TokenGroupUpdatePayload = {
   group?: unknown;
   group_id?: unknown;
 };
+
+const DEFAULT_NEW_API_QUOTA_PER_UNIT = 500000;
 
 export function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim();
@@ -53,8 +62,56 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function asPositiveNumber(value: unknown, fallback: number): number {
+  const parsed = asNumber(value, fallback);
+  return parsed > 0 ? parsed : fallback;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeNewApiDisplayType(value: unknown): NewApiQuotaConversion['displayType'] {
+  const normalized = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (normalized === 'CNY' || normalized === 'TOKENS' || normalized === 'CUSTOM') return normalized;
+  return 'USD';
+}
+
+function newApiQuotaConversion(status: unknown): NewApiQuotaConversion {
+  const record = isRecord(status) ? status : {};
+  const displayType = normalizeNewApiDisplayType(record.quota_display_type);
+  const quotaPerUnit = asPositiveNumber(record.quota_per_unit, DEFAULT_NEW_API_QUOTA_PER_UNIT);
+  const rate =
+    displayType === 'CNY'
+      ? asPositiveNumber(record.usd_exchange_rate, 1)
+      : displayType === 'CUSTOM'
+        ? asPositiveNumber(record.custom_currency_exchange_rate, 1)
+        : 1;
+  return {
+    displayType,
+    quotaPerUnit,
+    rate,
+    unit: displayType === 'TOKENS' ? 'tokens' : displayType
+  };
+}
+
+function convertNewApiQuota(value: unknown, conversion: NewApiQuotaConversion): number {
+  const quota = asNumber(value, 0);
+  if (conversion.displayType === 'TOKENS') return quota;
+  return (quota / conversion.quotaPerUnit) * conversion.rate;
+}
+
+function storedNewApiQuotaConversion(value: unknown): NewApiQuotaConversion | null {
+  if (!isRecord(value)) return null;
+  const displayType = normalizeNewApiDisplayType(value.displayType);
+  const quotaPerUnit = asPositiveNumber(value.quotaPerUnit, DEFAULT_NEW_API_QUOTA_PER_UNIT);
+  const rate = displayType === 'TOKENS' ? 1 : asPositiveNumber(value.rate, 1);
+  return {
+    displayType,
+    quotaPerUnit,
+    rate,
+    unit: displayType === 'TOKENS' ? 'tokens' : displayType
+  };
 }
 
 function tokenIdOf(value: unknown): number | null {
@@ -271,6 +328,8 @@ async function syncNewApi(channel: ChannelRecord): Promise<SyncResult> {
   if (String(profileRecord.id ?? channel.newapi_user_id) !== String(channel.newapi_user_id)) {
     throw new UpstreamError('new-api userId 与访问令牌所属用户不一致', 400, profile);
   }
+  const status = await newApiRequest(channel, '/status').catch(() => null);
+  const conversion = newApiQuotaConversion(status);
   const groupsPayload = await newApiRequest(channel, '/user/self/groups');
   const tokens = await fetchNewApiTokens(channel);
   const groups = Array.isArray(groupsPayload)
@@ -279,15 +338,31 @@ async function syncNewApi(channel: ChannelRecord): Promise<SyncResult> {
   return {
     profile,
     balanceSnapshot: {
-      balance: asNumber(profileRecord.quota, 0),
-      used_balance: asNumber(profileRecord.used_quota, 0),
-      unit: 'new-api-quota',
-      raw: profile
+      balance: convertNewApiQuota(profileRecord.quota, conversion),
+      used_balance: convertNewApiQuota(profileRecord.used_quota, conversion),
+      unit: `new-api-${conversion.unit}`,
+      raw: { profile, status, conversion }
     },
     groups,
     tokens: tokens.items,
-    raw: { profile, groups: groupsPayload, tokens: tokens.raw }
+    raw: { profile, status, groups: groupsPayload, tokens: tokens.raw }
   };
+}
+
+function migrateNewApiRawQuotaSnapshots(db: DatabaseSync, channelId: number, result: SyncResult): void {
+  const snapshot = result.balanceSnapshot;
+  if (!String(snapshot.unit).startsWith('new-api-')) return;
+  const raw = isRecord(snapshot.raw) ? snapshot.raw : {};
+  const conversion = storedNewApiQuotaConversion(raw.conversion);
+  if (!conversion || conversion.displayType === 'TOKENS') return;
+  db.prepare(`
+    UPDATE balance_snapshots
+    SET balance = balance / ? * ?,
+        used_balance = CASE WHEN used_balance IS NULL THEN NULL ELSE used_balance / ? * ? END,
+        unit = ?
+    WHERE channel_id = ?
+      AND unit = 'new-api-quota'
+  `).run(conversion.quotaPerUnit, conversion.rate, conversion.quotaPerUnit, conversion.rate, snapshot.unit, channelId);
 }
 
 function upsertCache(db: DatabaseSync, channelId: number, key: CacheKey, raw: unknown, normalized: unknown): void {
@@ -387,6 +462,7 @@ async function updateNewApiTokenGroup(channel: ChannelRecord, tokenId: number, p
 }
 
 function persistSyncResult(db: DatabaseSync, channel: ChannelRecord, result: SyncResult): void {
+  migrateNewApiRawQuotaSnapshots(db, channel.id, result);
   upsertCache(db, channel.id, 'profile', result.raw.profile ?? result.profile, result.profile);
   upsertCache(db, channel.id, 'groups', result.raw.groups ?? result.groups, result.groups);
   upsertCache(db, channel.id, 'tokens', result.raw.tokens ?? result.tokens, result.tokens);

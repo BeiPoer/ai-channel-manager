@@ -94,7 +94,10 @@ describe('channel adapters', () => {
     const baseUrl = await startMock((req, res, url) => {
       if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
       if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
-      if (url.pathname === '/api/user/self') return json(res, 200, { success: true, data: { id: 42, quota: 99, used_quota: 8, request_count: 3 } });
+      if (url.pathname === '/api/status') return json(res, 200, { success: true, data: { quota_per_unit: 500000, quota_display_type: 'USD' } });
+      if (url.pathname === '/api/user/self') {
+        return json(res, 200, { success: true, data: { id: 42, quota: 1000000, used_quota: 250000, request_count: 3 } });
+      }
       if (url.pathname === '/api/user/self/groups') return json(res, 200, { success: true, data: { default: { ratio: 1 } } });
       if (url.pathname === '/api/token/') return json(res, 200, { success: true, data: { items: [{ name: 'token-a' }], total: 1 } });
       return json(res, 404, { success: false, message: 'not found' });
@@ -110,8 +113,43 @@ describe('channel adapters', () => {
     await syncChannel(db, Number(result.lastInsertRowid));
 
     const snapshot = db.prepare('SELECT * FROM balance_snapshots').get() as { balance: number; used_balance: number };
-    expect(snapshot.balance).toBe(99);
-    expect(snapshot.used_balance).toBe(8);
+    expect(snapshot.balance).toBe(2);
+    expect(snapshot.used_balance).toBe(0.5);
+    db.close();
+  });
+
+  it('migrates old new-api quota snapshots to display units when syncing', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
+      if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
+      if (url.pathname === '/api/status') return json(res, 200, { success: true, data: { quota_per_unit: 500000, quota_display_type: 'USD' } });
+      if (url.pathname === '/api/user/self') return json(res, 200, { success: true, data: { id: 42, quota: 1500000, used_quota: 500000 } });
+      if (url.pathname === '/api/user/self/groups') return json(res, 200, { success: true, data: {} });
+      if (url.pathname === '/api/token/') return json(res, 200, { success: true, data: { items: [], total: 0 } });
+      return json(res, 404, { success: false, message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'p', 'system-token', '42', 'syncing', ?, ?)
+    `).run(baseUrl, now, now);
+    const channelId = Number(result.lastInsertRowid);
+    db.prepare(`
+      INSERT INTO balance_snapshots (channel_id, balance, used_balance, unit, raw_json, captured_at)
+      VALUES (?, 1000000, 250000, 'new-api-quota', '{}', ?)
+    `).run(channelId, now);
+
+    await syncChannel(db, channelId);
+
+    const snapshots = db.prepare('SELECT balance, used_balance, unit FROM balance_snapshots ORDER BY id ASC').all() as {
+      balance: number;
+      used_balance: number;
+      unit: string;
+    }[];
+    expect(snapshots[0]).toEqual({ balance: 2, used_balance: 0.5, unit: 'new-api-USD' });
+    expect(snapshots[1]).toEqual({ balance: 3, used_balance: 1, unit: 'new-api-USD' });
     db.close();
   });
 
