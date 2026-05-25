@@ -631,45 +631,318 @@ small,
 }
 
 .chartFrame {
-  min-height: 226px;
+  min-height: 276px;
+}
+
+.chartSummary,
+.chartValueLine,
+.chartDelta,
+.chartTimeline {
+  display: flex;
+  align-items: center;
+}
+
+.chartSummary {
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.chartValue {
+  min-width: 0;
+}
+
+.chartValue > span,
+.chartDelta span,
+.chartTimeline {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chartValueLine {
+  min-width: 0;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.chartValueLine strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 780;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.chartValueLine em {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 160px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 720;
+  line-height: 1;
+  padding: 5px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chartDelta {
+  flex: 0 0 auto;
+  min-width: 118px;
+  justify-content: flex-end;
+  gap: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 8px 10px;
+  text-align: right;
+}
+
+.chartDelta strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 780;
+  line-height: 1;
+}
+
+.chartDelta small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.chartDelta.up {
+  border-color: #bbf7d0;
+  background: var(--success-soft);
+}
+
+.chartDelta.up strong,
+.chartDelta.up small {
+  color: var(--success);
+}
+
+.chartDelta.down {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+}
+
+.chartDelta.down strong,
+.chartDelta.down small {
+  color: #0369a1;
+}
+
+.chartDelta.flat strong {
+  color: var(--muted-strong);
+}
+
+.chartPlotShell {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  min-height: 206px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  overflow: visible;
+}
+
+.chartYAxis {
+  position: relative;
+  border-right: 1px solid var(--border-soft);
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.chartYAxis span {
+  position: absolute;
+  right: 9px;
+  max-width: 34px;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chartPlot {
+  min-width: 0;
+  padding: 12px 14px 10px 8px;
+}
+
+.chartCanvas {
+  position: relative;
+  height: 184px;
+  cursor: crosshair;
+  outline: none;
+}
+
+.chartCanvas:focus-visible {
+  border-radius: 6px;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
 }
 
 .chart {
   display: block;
   width: 100%;
-  height: 204px;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: linear-gradient(180deg, #fbfdff 0%, #f8fafc 100%);
+  height: 100%;
+  overflow: visible;
 }
 
 .chartGridLine {
   stroke: #e5eaf1;
-  stroke-width: 0.5;
+  stroke-dasharray: 4 5;
+  stroke-width: 0.65;
   vector-effect: non-scaling-stroke;
 }
 
 .chartArea {
-  fill: rgba(8, 145, 178, 0.08);
   stroke: none;
 }
 
-.chartLine {
+.chartLine,
+.chartLineShadow {
   fill: none;
-  stroke: var(--cyan);
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2.2;
   vector-effect: non-scaling-stroke;
 }
 
-.chartLegend {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
+.chartLineShadow {
+  stroke: rgba(8, 145, 178, 0.18);
+  stroke-width: 6;
+}
+
+.chartLine {
+  stroke: var(--cyan);
+  stroke-width: 2.6;
+}
+
+.chartMarker {
+  position: absolute;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.chartMarker.first {
+  background: #94a3b8;
+}
+
+.chartMarker.latest {
+  width: 12px;
+  height: 12px;
+  background: var(--cyan);
+  box-shadow: 0 3px 9px rgba(8, 145, 178, 0.36);
+}
+
+.chartHoverLine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(8, 145, 178, 0), rgba(8, 145, 178, 0.52), rgba(8, 145, 178, 0));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.chartHoverMarker {
+  position: absolute;
+  z-index: 3;
+  width: 14px;
+  height: 14px;
+  border: 3px solid var(--surface);
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.28);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.chartTooltip {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  min-width: 104px;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #172033;
+  box-shadow: 0 14px 30px rgba(23, 32, 51, 0.22);
+  color: #ffffff;
+  padding: 9px 10px;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 12px));
+  white-space: nowrap;
+}
+
+.chartTooltip.left {
+  transform: translate(calc(-100% - 12px), -50%);
+}
+
+.chartTooltip.right {
+  transform: translate(12px, -50%);
+}
+
+.chartTooltip strong {
+  font-size: 14px;
+  font-weight: 780;
+  line-height: 1;
+}
+
+.chartTooltip small {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.chartTimeline {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
   margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chartTimelineScale {
+  position: relative;
+  grid-column: 2;
+  min-width: 0;
+  height: 16px;
+  margin: 0 14px 0 8px;
+}
+
+.chartTimelineScale span {
+  position: absolute;
+  top: 0;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.chartTimelineScale span.start {
+  transform: translateX(0);
+}
+
+.chartTimelineScale span.end {
+  transform: translateX(-100%);
 }
 
 .chartEmpty,

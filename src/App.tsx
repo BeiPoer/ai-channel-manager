@@ -23,8 +23,8 @@ import {
   X,
   Zap
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
+import type { FormEvent, PointerEvent, ReactNode } from 'react';
 import { api, setUnauthorizedHandler } from './api';
 import type { AlertEvent, AuthState, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType } from './types';
 
@@ -294,6 +294,39 @@ function formatShortTime(value: string | null | undefined, fallback = '从未同
 function formatNumber(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(value)) return '-';
   return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 }).format(value);
+}
+
+function formatCompactNumber(value: number) {
+  const abs = Math.abs(value);
+  if (!Number.isFinite(value)) return '-';
+  if (abs >= 100000) return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+  if (abs >= 1000) return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(value);
+  if (abs >= 100) return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(value);
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value);
+}
+
+function smoothPath(points: { x: number; y: number }[]) {
+  if (!points.length) return '';
+  if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  const segments = [`M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] ?? points[index];
+    const current = points[index];
+    const next = points[index + 1];
+    const afterNext = points[index + 2] ?? next;
+    const cp1 = {
+      x: current.x + (next.x - previous.x) / 6,
+      y: current.y + (next.y - previous.y) / 6
+    };
+    const cp2 = {
+      x: next.x - (afterNext.x - current.x) / 6,
+      y: next.y - (afterNext.y - current.y) / 6
+    };
+    segments.push(
+      `C ${cp1.x.toFixed(2)} ${cp1.y.toFixed(2)} ${cp2.x.toFixed(2)} ${cp2.y.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`
+    );
+  }
+  return segments.join(' ');
 }
 
 function asRows(data: unknown): Record<string, unknown>[] {
@@ -888,31 +921,148 @@ function JsonTable({ data, emptyText = '暂无数据' }: { data: unknown; emptyT
 }
 
 function BalanceChart({ history }: { history: Overview['history'] }) {
+  const chartId = useId().replace(/:/g, '');
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const points = history.slice(-30);
   if (points.length < 2) return <div className="chartEmpty">暂无趋势</div>;
   const values = points.map((item) => item.balance);
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const range = max - min || 1;
-  const pathData = points
-    .map((item, index) => {
-      const x = (index / (points.length - 1)) * 100;
-      const y = 88 - ((item.balance - min) / range) * 70;
-      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .join(' ');
+  const rawRange = max - min;
+  const padding = rawRange === 0 ? Math.max(Math.abs(max) * 0.06, 1) : rawRange * 0.12;
+  const lowerBound = min >= 0 ? Math.max(0, min - padding) : min - padding;
+  const upperBound = max + padding;
+  const range = upperBound - lowerBound || 1;
+  const first = points[0];
+  const latest = points[points.length - 1];
+  const delta = latest.balance - first.balance;
+  const deltaPercent = first.balance === 0 ? null : (delta / Math.abs(first.balance)) * 100;
+  const trendTone = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat';
+  const trendLabel = delta > 0 ? '增加' : delta < 0 ? '消耗' : '持平';
+  const yTicks = Array.from({ length: 4 }, (_, index) => {
+    const value = upperBound - (range * index) / 3;
+    return {
+      value,
+      y: 10 + ((upperBound - value) / range) * 76
+    };
+  });
+  const chartPoints = points.map((item, index) => {
+    const plotPaddingX = 1.8;
+    return {
+      item,
+      x: plotPaddingX + (index / (points.length - 1)) * (100 - plotPaddingX * 2),
+      y: 10 + ((upperBound - item.balance) / range) * 76
+    };
+  });
+  const pathData = smoothPath(chartPoints);
+  const firstPoint = chartPoints[0];
+  const latestPoint = chartPoints[chartPoints.length - 1];
+  const gradientId = `${chartId}-balance-area`;
+  const deltaPrefix = delta > 0 ? '+' : '';
+  const deltaValue = delta < 0 ? Math.abs(delta) : delta;
+  const percentValue = deltaPercent === null ? null : delta < 0 ? Math.abs(deltaPercent) : deltaPercent;
+  const percentPrefix = delta > 0 ? '+' : '';
+  const percentLabel =
+    percentValue === null
+      ? null
+      : `${percentPrefix}${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(percentValue)}%`;
+  const hoveredPoint = hoverIndex === null ? null : chartPoints[hoverIndex];
+  const tooltipAlign = hoveredPoint && hoveredPoint.x > 72 ? 'left' : hoveredPoint && hoveredPoint.x < 28 ? 'right' : 'center';
+  const xTicks =
+    points.length > 2
+      ? [chartPoints[0], chartPoints[Math.floor((chartPoints.length - 1) / 2)], chartPoints[chartPoints.length - 1]]
+      : [chartPoints[0], chartPoints[chartPoints.length - 1]];
+
+  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const position = ((event.clientX - rect.left) / rect.width) * 100;
+    const nextIndex = chartPoints.reduce(
+      (nearest, point, index) => {
+        const distance = Math.abs(point.x - position);
+        return distance < nearest.distance ? { index, distance } : nearest;
+      },
+      { index: 0, distance: Number.POSITIVE_INFINITY }
+    ).index;
+    setHoverIndex(nextIndex);
+  }
+
   return (
     <div className="chartFrame">
-      <svg className="chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="余额趋势">
-        {[20, 40, 60, 80].map((y) => (
-          <line key={y} className="chartGridLine" x1="0" x2="100" y1={y} y2={y} />
-        ))}
-        <path className="chartArea" d={`${pathData} L 100 94 L 0 94 Z`} />
-        <path className="chartLine" d={pathData} />
-      </svg>
-      <div className="chartLegend">
-        <span>低点 {formatNumber(min)}</span>
-        <span>高点 {formatNumber(max)}</span>
+      <div className="chartSummary">
+        <div className="chartValue">
+          <span>最新余额</span>
+          <div className="chartValueLine">
+            <strong>{formatNumber(latest.balance)}</strong>
+          </div>
+        </div>
+        <div className={`chartDelta ${trendTone}`}>
+          <span>{trendLabel}</span>
+          <strong>
+            {deltaPrefix}
+            {formatNumber(deltaValue)}
+          </strong>
+          {percentLabel && <small>{percentLabel}</small>}
+        </div>
+      </div>
+      <div className="chartPlotShell">
+        <div className="chartYAxis" aria-hidden="true">
+          {yTicks.map((tick) => (
+            <span key={tick.value.toFixed(4)} style={{ top: `${tick.y}%` }}>
+              {formatCompactNumber(tick.value)}
+            </span>
+          ))}
+        </div>
+        <div className="chartPlot">
+          <div
+            className="chartCanvas"
+            onPointerMove={handlePointerMove}
+            onPointerLeave={() => setHoverIndex(null)}
+            onFocus={() => setHoverIndex(chartPoints.length - 1)}
+            onBlur={() => setHoverIndex(null)}
+            tabIndex={0}
+          >
+            <svg className="chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="余额趋势">
+              <defs>
+                <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(8, 145, 178, 0.26)" />
+                  <stop offset="72%" stopColor="rgba(8, 145, 178, 0.06)" />
+                  <stop offset="100%" stopColor="rgba(8, 145, 178, 0)" />
+                </linearGradient>
+              </defs>
+              {yTicks.map((tick) => (
+                <line key={tick.value.toFixed(4)} className="chartGridLine" x1="0" x2="100" y1={tick.y} y2={tick.y} />
+              ))}
+              <path className="chartArea" d={`${pathData} L ${latestPoint.x.toFixed(2)} 92 L ${firstPoint.x.toFixed(2)} 92 Z`} fill={`url(#${gradientId})`} />
+              <path className="chartLineShadow" d={pathData} />
+              <path className="chartLine" d={pathData} />
+            </svg>
+            <span className="chartMarker first" style={{ left: `${firstPoint.x}%`, top: `${firstPoint.y}%` }} />
+            <span className="chartMarker latest" style={{ left: `${latestPoint.x}%`, top: `${latestPoint.y}%` }} />
+            {hoveredPoint && (
+              <>
+                <span className="chartHoverLine" style={{ left: `${hoveredPoint.x}%` }} />
+                <span className="chartHoverMarker" style={{ left: `${hoveredPoint.x}%`, top: `${hoveredPoint.y}%` }} />
+                <span className={`chartTooltip ${tooltipAlign}`} style={{ left: `${hoveredPoint.x}%`, top: `${hoveredPoint.y}%` }}>
+                  <strong>{formatNumber(hoveredPoint.item.balance)}</strong>
+                  <small>{formatShortTime(hoveredPoint.item.captured_at, '-')}</small>
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="chartTimeline">
+        <div className="chartTimelineScale">
+          {xTicks.map((point, index) => (
+            <span
+              key={`${point.item.id}-${index}`}
+              className={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : undefined}
+              style={{ left: `${point.x}%` }}
+            >
+              {formatShortTime(point.item.captured_at, '-')}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
