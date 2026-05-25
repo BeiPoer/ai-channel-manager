@@ -53,7 +53,7 @@ describe('local API', () => {
     db.close();
   });
 
-  it('creates a channel, exposes channel password and cascades delete', async () => {
+  it('creates channels, exposes channel credentials and cascades delete', async () => {
     const baseUrl = await startSub2apiMock();
     const db = createDatabase(':memory:');
     const app = createApp(db, testConfig);
@@ -76,6 +76,18 @@ describe('local API', () => {
     const list = await agent.get('/api/channels').expect(200);
     expect(list.body[0].has_password).toBe(true);
     expect(list.body[0].password).toBe('p');
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', 'https://new-api.example.com', 'u', 'system-token', '1', 'active', ?, ?)
+    `).run(now, now);
+
+    const withNewApi = await agent.get('/api/channels').expect(200);
+    const newApiChannel = withNewApi.body.find((channel: { type: string }) => channel.type === 'newapi');
+    expect(newApiChannel.has_newapi_access_token).toBe(true);
+    expect(newApiChannel.newapi_access_token).toBe('system-token');
 
     await agent.delete(`/api/channels/${created.body.id}`).expect(204);
     const taskCount = db.prepare('SELECT COUNT(*) AS count FROM automation_tasks').get() as { count: number };

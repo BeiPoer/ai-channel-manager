@@ -650,7 +650,7 @@ function ChannelModal({
     base_url: channel?.base_url || '',
     username: channel?.username || '',
     password: channel?.password || '',
-    newapi_access_token: '',
+    newapi_access_token: channel?.newapi_access_token || '',
     newapi_user_id: channel?.newapi_user_id || ''
   });
   const [saving, setSaving] = useState(false);
@@ -723,11 +723,10 @@ function ChannelModal({
             <label>
               系统访问令牌
               <input
-                type="password"
+                type="text"
                 required={!channel}
                 value={form.newapi_access_token}
                 onChange={(event) => setForm({ ...form, newapi_access_token: event.target.value })}
-                placeholder={channel ? '留空保持不变' : ''}
               />
             </label>
             <label>

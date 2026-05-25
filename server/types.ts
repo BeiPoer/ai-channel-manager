@@ -29,6 +29,7 @@ export interface SafeChannel {
   base_url: string;
   username: string | null;
   password: string | null;
+  newapi_access_token: string | null;
   newapi_user_id: string | null;
   status: ChannelStatus;
   last_sync_at: string | null;
