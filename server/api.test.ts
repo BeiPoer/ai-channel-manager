@@ -71,7 +71,11 @@ describe('local API', () => {
     await agent
       .post(`/api/channels/${created.body.id}/tasks`)
       .send({ type: 'low_balance', threshold: 3 })
-      .expect(201);
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body.interval_minutes).toBe(5);
+        expect(body.cooldown_minutes).toBe(30);
+      });
 
     const list = await agent.get('/api/channels').expect(200);
     expect(list.body[0].has_password).toBe(true);

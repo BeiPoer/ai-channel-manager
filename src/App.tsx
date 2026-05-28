@@ -50,6 +50,14 @@ const emptyEmail: EmailSettings = {
   default_interval_minutes: 30
 };
 
+const taskTimingDefaults: Record<TaskType, { interval_minutes: number; cooldown_minutes: number }> = {
+  low_balance: { interval_minutes: 5, cooldown_minutes: 30 },
+  burn_rate: { interval_minutes: 30, cooldown_minutes: 60 },
+  group_added: { interval_minutes: 30, cooldown_minutes: 60 },
+  group_removed: { interval_minutes: 30, cooldown_minutes: 60 },
+  group_ratio_changed: { interval_minutes: 30, cooldown_minutes: 60 }
+};
+
 const statusCopy: Record<Channel['status'], { label: string; caption: string }> = {
   active: { label: '正常', caption: '可用' },
   syncing: { label: '同步中', caption: '处理中' },
@@ -1307,13 +1315,14 @@ function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; on
 }
 
 function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAlertsChanged: () => void | Promise<void> }) {
+  const defaultType: TaskType = 'low_balance';
   const [tasks, setTasks] = useState<AutomationTask[]>([]);
   const [form, setForm] = useState({
-    type: 'low_balance' as TaskType,
+    type: defaultType,
     threshold: '',
-    interval_minutes: 30,
+    interval_minutes: taskTimingDefaults[defaultType].interval_minutes,
     lookback_minutes: 60,
-    cooldown_minutes: 60,
+    cooldown_minutes: taskTimingDefaults[defaultType].cooldown_minutes,
     recipients: ''
   });
   const [loading, setLoading] = useState(false);
@@ -1335,6 +1344,10 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
   useEffect(() => {
     load();
   }, [channel.id]);
+
+  function selectTaskType(type: TaskType) {
+    setForm({ ...form, type, ...taskTimingDefaults[type] });
+  }
 
   async function create(event: FormEvent) {
     event.preventDefault();
@@ -1380,22 +1393,22 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
       <form className="taskForm dataPanel" onSubmit={create}>
         <SectionHeader title="新建自动化" description="按余额、消耗速度或分组变化触发邮件告警" icon={<Clock3 size={17} />} />
         <div className="segmented taskTypePicker">
-          <button type="button" className={form.type === 'low_balance' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'low_balance' })}>
+          <button type="button" className={form.type === 'low_balance' ? 'active' : ''} onClick={() => selectTaskType('low_balance')}>
             低余额
           </button>
-          <button type="button" className={form.type === 'burn_rate' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'burn_rate' })}>
+          <button type="button" className={form.type === 'burn_rate' ? 'active' : ''} onClick={() => selectTaskType('burn_rate')}>
             消耗过快
           </button>
-          <button type="button" className={form.type === 'group_added' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'group_added' })}>
+          <button type="button" className={form.type === 'group_added' ? 'active' : ''} onClick={() => selectTaskType('group_added')}>
             新增分组
           </button>
-          <button type="button" className={form.type === 'group_removed' ? 'active' : ''} onClick={() => setForm({ ...form, type: 'group_removed' })}>
+          <button type="button" className={form.type === 'group_removed' ? 'active' : ''} onClick={() => selectTaskType('group_removed')}>
             减少分组
           </button>
           <button
             type="button"
             className={form.type === 'group_ratio_changed' ? 'active' : ''}
-            onClick={() => setForm({ ...form, type: 'group_ratio_changed' })}
+            onClick={() => selectTaskType('group_ratio_changed')}
           >
             倍率变化
           </button>

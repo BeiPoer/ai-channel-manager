@@ -36,6 +36,13 @@ function listCache(db: DatabaseSync, channelId: number, key: string, fallback: u
 
 const taskTypes: AutomationTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed'];
 const groupTaskStateKey = 'groups';
+const taskTimingDefaults: Record<AutomationTaskType, { interval_minutes: number; cooldown_minutes: number }> = {
+  low_balance: { interval_minutes: 5, cooldown_minutes: 30 },
+  burn_rate: { interval_minutes: 30, cooldown_minutes: 60 },
+  group_added: { interval_minutes: 30, cooldown_minutes: 60 },
+  group_removed: { interval_minutes: 30, cooldown_minutes: 60 },
+  group_ratio_changed: { interval_minutes: 30, cooldown_minutes: 60 }
+};
 
 function isTaskType(value: unknown): value is AutomationTaskType {
   return typeof value === 'string' && taskTypes.includes(value as AutomationTaskType);
@@ -243,18 +250,20 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const payload = taskPayload(req.body || {});
     if (!isGroupTaskType(payload.type) && payload.threshold === undefined) throw new UpstreamError('预警阈值无效', 400);
     const now = nowIso();
+    const taskType = payload.type || 'low_balance';
+    const timingDefaults = taskTimingDefaults[taskType];
     const result = db.prepare(`
       INSERT INTO automation_tasks (
         channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, recipients_json, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
-      payload.type || 'low_balance',
+      taskType,
       payload.enabled ?? 1,
-      payload.interval_minutes ?? (Number(getSetting(db, 'default_interval_minutes', '30')) || 30),
+      payload.interval_minutes ?? (taskType === 'low_balance' ? timingDefaults.interval_minutes : Number(getSetting(db, 'default_interval_minutes', '30')) || timingDefaults.interval_minutes),
       payload.threshold ?? 0,
       payload.lookback_minutes ?? 60,
-      payload.cooldown_minutes ?? 60,
+      payload.cooldown_minutes ?? timingDefaults.cooldown_minutes,
       payload.recipients_json ?? JSON.stringify([]),
       now,
       now
