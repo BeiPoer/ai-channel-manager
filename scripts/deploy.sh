@@ -286,11 +286,11 @@ After=network.target
 [Service]
 Type=simple
 User=$unit_service_user
-WorkingDirectory="$unit_project_dir"
+WorkingDirectory=$unit_project_dir
 Environment="HOST=$unit_host"
 Environment="PORT=$unit_port"
 Environment="NODE_ENV=$unit_node_env"
-ExecStart="$unit_node_path" "$unit_project_dir/dist/server/index.js"
+ExecStart=$unit_node_path $unit_project_dir/dist/server/index.js
 Restart=always
 RestartSec=5
 
