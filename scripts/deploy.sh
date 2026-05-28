@@ -7,6 +7,7 @@ set -eu
 # Common usage:
 #   sh scripts/deploy.sh
 #   SERVICE_NAME=ai-channel-manager sh scripts/deploy.sh
+#   PORT=8787 sh scripts/deploy.sh
 #   RESTART_CMD='sudo systemctl restart ai-channel-manager' sh scripts/deploy.sh
 #   SERVICE_MANAGER=pm2 PM2_NAME=ai-channel-manager sh scripts/deploy.sh
 
@@ -17,8 +18,13 @@ BUILD_CMD=${BUILD_CMD:-npm run build}
 SERVICE_MANAGER=${SERVICE_MANAGER:-auto}
 SERVICE_NAME=${SERVICE_NAME:-ai-channel-manager}
 PM2_NAME=${PM2_NAME:-ai-channel-manager}
+SERVICE_USER=${SERVICE_USER:-}
+INSTALL_SYSTEMD_SERVICE=${INSTALL_SYSTEMD_SERVICE:-auto}
 RESTART_CMD=${RESTART_CMD:-}
-HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:8787/api/auth/status}
+APP_HOST=${HOST:-127.0.0.1}
+APP_PORT=${PORT:-}
+APP_NODE_ENV=${NODE_ENV:-production}
+HEALTH_URL=${HEALTH_URL:-}
 HEALTH_RETRIES=${HEALTH_RETRIES:-20}
 HEALTH_SLEEP=${HEALTH_SLEEP:-2}
 SKIP_GIT_PULL=${SKIP_GIT_PULL:-0}
@@ -41,6 +47,16 @@ fail() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+run_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return
+  fi
+
+  command_exists sudo || fail "sudo is required to manage systemd services"
+  sudo "$@"
 }
 
 resolve_project_dir() {
@@ -97,9 +113,140 @@ run_build() {
   sh -c "$BUILD_CMD"
 }
 
+is_valid_port() {
+  port=$1
+  case "$port" in
+    '' | *[!0-9]*)
+      return 1
+      ;;
+  esac
+
+  if [ "$port" -ge 1 ] 2>/dev/null && [ "$port" -le 65535 ] 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_new_service_port() {
+  if [ -n "$APP_PORT" ]; then
+    is_valid_port "$APP_PORT" || fail "Invalid PORT: $APP_PORT. Use a number from 1 to 65535."
+    return
+  fi
+
+  if [ ! -t 0 ]; then
+    fail "PORT is required when creating the systemd service in non-interactive mode. Example: PORT=8787 sh scripts/deploy.sh"
+  fi
+
+  while :; do
+    printf '%s' "Enter service port (1-65535): " >&2
+    IFS= read -r input_port || fail "Failed to read service port"
+    if is_valid_port "$input_port"; then
+      APP_PORT=$input_port
+      return
+    fi
+    warn "Invalid port: $input_port. Use a number from 1 to 65535."
+  done
+}
+
+set_default_health_url_from_port() {
+  if [ -z "$HEALTH_URL" ] && [ -n "$1" ]; then
+    HEALTH_URL="http://127.0.0.1:$1/api/auth/status"
+  fi
+}
+
+ensure_health_url() {
+  if [ -n "$HEALTH_URL" ]; then
+    return
+  fi
+
+  if [ -n "$APP_PORT" ] && is_valid_port "$APP_PORT"; then
+    set_default_health_url_from_port "$APP_PORT"
+    return
+  fi
+
+  HEALTH_URL="http://127.0.0.1:8787/api/auth/status"
+}
+
+ensure_runtime_config_exists() {
+  if [ ! -f config.json ]; then
+    fail "Missing config.json. Copy config.example.json to config.json and set accessPassword before starting the service."
+  fi
+}
+
+validate_service_name() {
+  case "$SERVICE_NAME" in
+    '' | */*)
+      fail "Unsupported SERVICE_NAME: $SERVICE_NAME"
+      ;;
+  esac
+}
+
+resolve_service_user() {
+  if [ -n "$SERVICE_USER" ]; then
+    printf '%s\n' "$SERVICE_USER"
+    return
+  fi
+
+  id -un 2>/dev/null || whoami
+}
+
+resolve_node_path() {
+  command_exists node || fail "node is required"
+  node_cmd=$(command -v node)
+
+  if command_exists readlink; then
+    resolved_node=$(readlink -f "$node_cmd" 2>/dev/null || true)
+    if [ -n "$resolved_node" ]; then
+      printf '%s\n' "$resolved_node"
+      return
+    fi
+  fi
+
+  printf '%s\n' "$node_cmd"
+}
+
+systemd_escape_value() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g'
+}
+
+systemd_available() {
+  command_exists systemctl || return 1
+  systemctl show-environment >/dev/null 2>&1
+}
+
 systemd_unit_exists() {
   command_exists systemctl || return 1
-  systemctl list-unit-files "$SERVICE_NAME.service" >/dev/null 2>&1
+  systemctl cat "$SERVICE_NAME.service" >/dev/null 2>&1
+}
+
+systemd_service_port() {
+  command_exists systemctl || return 1
+  env_line=$(systemctl show "$SERVICE_NAME.service" -p Environment --value 2>/dev/null || true)
+  for env_item in $env_line; do
+    case "$env_item" in
+      PORT=*)
+        unit_port=${env_item#PORT=}
+        if is_valid_port "$unit_port"; then
+          printf '%s\n' "$unit_port"
+          return 0
+        fi
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+remember_systemd_health_port() {
+  if [ -n "$HEALTH_URL" ]; then
+    return
+  fi
+
+  unit_port=$(systemd_service_port || true)
+  if [ -n "$unit_port" ]; then
+    set_default_health_url_from_port "$unit_port"
+  fi
 }
 
 pm2_process_exists() {
@@ -107,11 +254,72 @@ pm2_process_exists() {
   pm2 describe "$PM2_NAME" >/dev/null 2>&1
 }
 
+create_systemd_service() {
+  validate_service_name
+  systemd_available || fail "systemd is not available. Set SERVICE_MANAGER=pm2, SERVICE_MANAGER=none, or RESTART_CMD='your restart command'."
+  if [ "$INSTALL_SYSTEMD_SERVICE" = "0" ]; then
+    fail "systemd service not found: $SERVICE_NAME.service. INSTALL_SYSTEMD_SERVICE=0 prevents automatic service creation."
+  fi
+
+  ensure_runtime_config_exists
+  resolve_new_service_port
+  set_default_health_url_from_port "$APP_PORT"
+
+  service_user=$(resolve_service_user)
+  node_path=$(resolve_node_path)
+  project_dir=$(pwd)
+  unit_path="/etc/systemd/system/$SERVICE_NAME.service"
+
+  unit_project_dir=$(systemd_escape_value "$project_dir")
+  unit_node_path=$(systemd_escape_value "$node_path")
+  unit_host=$(systemd_escape_value "$APP_HOST")
+  unit_port=$(systemd_escape_value "$APP_PORT")
+  unit_node_env=$(systemd_escape_value "$APP_NODE_ENV")
+  unit_service_user=$(systemd_escape_value "$service_user")
+
+  tmp_unit=$(mktemp) || fail "Failed to create temporary systemd unit file"
+  cat >"$tmp_unit" <<EOF
+[Unit]
+Description=AI Channel Manager
+After=network.target
+
+[Service]
+Type=simple
+User=$unit_service_user
+WorkingDirectory="$unit_project_dir"
+Environment="HOST=$unit_host"
+Environment="PORT=$unit_port"
+Environment="NODE_ENV=$unit_node_env"
+ExecStart="$unit_node_path" "$unit_project_dir/dist/server/index.js"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Creating systemd service: $SERVICE_NAME"
+  if ! run_as_root install -m 0644 "$tmp_unit" "$unit_path"; then
+    rm -f "$tmp_unit"
+    fail "Failed to install $unit_path. Make sure this user has sudo permission."
+  fi
+  rm -f "$tmp_unit"
+
+  run_as_root systemctl daemon-reload
+  run_as_root systemctl enable "$SERVICE_NAME"
+}
+
 restart_with_systemd() {
-  systemd_unit_exists || fail "systemd service not found: $SERVICE_NAME.service"
+  if systemd_unit_exists; then
+    remember_systemd_health_port
+  else
+    create_systemd_service
+  fi
+
+  ensure_runtime_config_exists
   log "Restarting systemd service: $SERVICE_NAME"
-  sudo systemctl restart "$SERVICE_NAME"
-  sudo systemctl status "$SERVICE_NAME" --no-pager -l || true
+  run_as_root systemctl restart "$SERVICE_NAME"
+  run_as_root systemctl status "$SERVICE_NAME" --no-pager -l || true
 }
 
 restart_with_pm2() {
@@ -146,6 +354,8 @@ run_restart() {
     auto)
       if systemd_unit_exists; then
         restart_with_systemd
+      elif systemd_available; then
+        restart_with_systemd
       elif pm2_process_exists; then
         restart_with_pm2
       else
@@ -169,6 +379,7 @@ run_healthcheck() {
     return
   fi
 
+  ensure_health_url
   log "Checking service health: $HEALTH_URL"
   i=1
   while [ "$i" -le "$HEALTH_RETRIES" ]; do
