@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createUpstreamLoginUrl, normalizeBaseUrl, syncChannel, updateTokenGroup } from './adapters.js';
 import { clearSessionCookie, isAuthenticated, requireAuth, setSessionCookie, verifyAccessPassword } from './auth.js';
 import type { AppConfig } from './config.js';
-import { getChannel, getSetting, nowIso, parseJson, parseTask, sanitizeChannel, splitRecipients } from './db.js';
+import { getChannel, getSetting, nowIso, parseTask, readChannelCache, sanitizeChannel, splitRecipients, upsertTaskState } from './db.js';
 import { getEmailSettings, saveEmailSettings, sendEmail } from './email.js';
 import { UpstreamError } from './http.js';
 import type { AutomationTaskRecord, AutomationTaskType, ChannelRecord, ChannelType } from './types.js';
@@ -31,13 +31,11 @@ function ensureChannel(db: DatabaseSync, id: number): ChannelRecord {
 }
 
 function listCache(db: DatabaseSync, channelId: number, key: string, fallback: unknown) {
-  const row = db.prepare('SELECT normalized_json FROM channel_cache WHERE channel_id = ? AND cache_key = ?').get(channelId, key) as
-    | { normalized_json: string }
-    | undefined;
-  return parseJson(row?.normalized_json, fallback);
+  return readChannelCache(db, channelId, key, fallback).value;
 }
 
 const taskTypes: AutomationTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed'];
+const groupTaskStateKey = 'groups';
 
 function isTaskType(value: unknown): value is AutomationTaskType {
   return typeof value === 'string' && taskTypes.includes(value as AutomationTaskType);
@@ -45,6 +43,11 @@ function isTaskType(value: unknown): value is AutomationTaskType {
 
 function isGroupTaskType(value: unknown): boolean {
   return value === 'group_added' || value === 'group_removed' || value === 'group_ratio_changed';
+}
+
+function seedGroupTaskState(db: DatabaseSync, taskId: number, channelId: number): void {
+  const groups = readChannelCache(db, channelId, 'groups', []);
+  if (groups.exists) upsertTaskState(db, taskId, groupTaskStateKey, groups.value);
 }
 
 function taskPayload(body: Record<string, unknown>, partial = false) {
@@ -257,6 +260,9 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
       now
     );
     const row = db.prepare('SELECT * FROM automation_tasks WHERE id = ?').get(Number(result.lastInsertRowid)) as unknown as AutomationTaskRecord;
+    if (isGroupTaskType(row.type)) {
+      seedGroupTaskState(db, row.id, id);
+    }
     res.status(201).json(parseTask(row));
   });
 
@@ -284,6 +290,11 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
       id
     );
     const row = db.prepare('SELECT * FROM automation_tasks WHERE id = ?').get(taskId) as unknown as AutomationTaskRecord;
+    const changedToGroupTask = payload.type !== undefined && isGroupTaskType(row.type) && !isGroupTaskType(existing.type);
+    const reenabledGroupTask = isGroupTaskType(row.type) && existing.enabled === 0 && payload.enabled === 1;
+    if (changedToGroupTask || reenabledGroupTask) {
+      seedGroupTaskState(db, row.id, id);
+    }
     res.json(parseTask(row));
   });
 

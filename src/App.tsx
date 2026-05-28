@@ -1446,7 +1446,7 @@ function AutomationPanel({ channel, onAlertsChanged }: { channel: Channel; onAle
         </div>
         <p className="fieldHint">
           {isGroupTask
-            ? '每次检查会同步渠道分组，并和上一次分组缓存对比；首次检查只建立基线，不触发告警。'
+            ? '创建任务时记录当前分组作为基线；之后每次检查会同步渠道分组，并和任务基线对比。没有分组缓存时，首次检查只建立基线。'
             : isBurnRate
               ? '按统计窗口内最早余额和最新余额计算消耗量，再折算成每小时消耗速度；充值或余额上涨不会触发。'
               : '只判断最新余额快照；统计窗口不参与低余额判断。'}

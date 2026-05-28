@@ -83,6 +83,17 @@ describe('automation evaluation', () => {
     expect(result.message).toContain('1 -> 1.5');
   });
 
+  it('triggers when a sub2api group rate multiplier changes', () => {
+    const result = evaluateGroupTask(
+      task({ type: 'group_ratio_changed' }),
+      [{ name: 'default', rate_multiplier: 1 }],
+      [{ name: 'default', rate_multiplier: 1.5 }],
+      'test'
+    );
+    expect(result.triggered).toBe(true);
+    expect(result.message).toContain('1 -> 1.5');
+  });
+
   it('does not trigger group alerts before a baseline cache exists', () => {
     const result = evaluateGroupTask(task({ type: 'group_added' }), [], [{ name: 'default', ratio: 1 }], 'test', false);
     expect(result.triggered).toBe(false);
@@ -186,6 +197,110 @@ describe('automation evaluation', () => {
     expect(alerts.map((alert) => alert.type)).toEqual(['group_added', 'group_ratio_changed']);
     expect(alerts[0].message).toContain('vip');
     expect(alerts[1].message).toContain('default 1 -> 2');
+    syncSpy.mockRestore();
+    db.close();
+  });
+
+  it('uses per-task group baseline even when channel cache was manually synced', async () => {
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO channels (id, name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES (1, 's', 'sub2api', 'http://127.0.0.1:1', 'u', 'p', 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (1, 'groups', ?, ?, ?)
+    `).run(JSON.stringify([{ name: 'default', ratio: 1 }]), JSON.stringify([{ name: 'default', ratio: 1 }]), now);
+    const taskId = Number(
+      db.prepare(`
+        INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+        VALUES (1, 'group_removed', 1, 1, 0, 60, 0, ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    db.prepare(`
+      INSERT INTO automation_task_state (task_id, state_key, value_json, updated_at)
+      VALUES (?, 'groups', ?, ?)
+    `).run(
+      taskId,
+      JSON.stringify([
+        { name: 'default', ratio: 1 },
+        { name: 'vip', ratio: 0.8 }
+      ]),
+      now
+    );
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    syncSpy.mockResolvedValue({
+      profile: {},
+      balanceSnapshot: { balance: 1, unit: 'quota', raw: {} },
+      groups: [{ name: 'default', ratio: 1 }],
+      tokens: [],
+      raw: {}
+    });
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueTasks(db, mailer);
+
+    const alert = db.prepare('SELECT type, message FROM alert_events').get() as { type: string; message: string };
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(taskId) as { value_json: string };
+    expect(mailer).toHaveBeenCalledTimes(1);
+    expect(alert.type).toBe('group_removed');
+    expect(alert.message).toContain('vip');
+    expect(JSON.parse(state.value_json)).toEqual([{ name: 'default', ratio: 1 }]);
+    syncSpy.mockRestore();
+    db.close();
+  });
+
+  it('backfills missing per-task group baseline from the existing channel cache', async () => {
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO channels (id, name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES (1, 's', 'sub2api', 'http://127.0.0.1:1', 'u', 'p', 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (1, 'groups', ?, ?, ?)
+    `).run(
+      JSON.stringify([{ name: 'default', rate_multiplier: 1 }]),
+      JSON.stringify([{ name: 'default', rate_multiplier: 1 }]),
+      now
+    );
+    const taskId = Number(
+      db.prepare(`
+        INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+        VALUES (1, 'group_ratio_changed', 1, 1, 0, 60, 0, ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    syncSpy.mockImplementation(async () => {
+      db.prepare(`
+        UPDATE channel_cache
+        SET raw_json = ?, normalized_json = ?, synced_at = ?
+        WHERE channel_id = 1 AND cache_key = 'groups'
+      `).run(
+        JSON.stringify([{ name: 'default', rate_multiplier: 2 }]),
+        JSON.stringify([{ name: 'default', rate_multiplier: 2 }]),
+        nowIso()
+      );
+      return {
+        profile: {},
+        balanceSnapshot: { balance: 1, unit: 'quota', raw: {} },
+        groups: [{ name: 'default', rate_multiplier: 2 }],
+        tokens: [],
+        raw: {}
+      };
+    });
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueTasks(db, mailer);
+
+    const alert = db.prepare('SELECT type, message FROM alert_events').get() as { type: string; message: string };
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(taskId) as { value_json: string };
+    expect(mailer).toHaveBeenCalledTimes(1);
+    expect(alert.type).toBe('group_ratio_changed');
+    expect(alert.message).toContain('default 1 -> 2');
+    expect(JSON.parse(state.value_json)).toEqual([{ name: 'default', rate_multiplier: 2 }]);
     syncSpy.mockRestore();
     db.close();
   });

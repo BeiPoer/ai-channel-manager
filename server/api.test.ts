@@ -1,7 +1,7 @@
 import http from 'node:http';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createDatabase } from './db.js';
+import { createDatabase, migrate } from './db.js';
 import { createApp } from './routes.js';
 import type { AppConfig } from './config.js';
 
@@ -154,6 +154,97 @@ describe('local API', () => {
 
     const response = await agent.get(`/api/channels/${Number(result.lastInsertRowid)}/upstream-login`).expect(400);
     expect(response.body.error).toContain('当前仅支持 sub2api');
+    db.close();
+  });
+
+  it('seeds group task baseline from current channel cache', async () => {
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const now = new Date().toISOString();
+    const channelId = Number(
+      db.prepare(`
+        INSERT INTO channels (
+          name, type, base_url, username, password, status, created_at, updated_at
+        ) VALUES ('s', 'sub2api', 'https://sub2api.example.com', 'u', 'p', 'active', ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (?, 'groups', ?, ?, ?)
+    `).run(channelId, JSON.stringify([{ name: 'vip' }]), JSON.stringify([{ name: 'vip' }]), now);
+
+    const response = await agent.post(`/api/channels/${channelId}/tasks`).send({ type: 'group_removed' }).expect(201);
+
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(response.body.id) as
+      | { value_json: string }
+      | undefined;
+    expect(state).toBeTruthy();
+    expect(JSON.parse(state?.value_json || '[]')).toEqual([{ name: 'vip' }]);
+    db.close();
+  });
+
+  it('does not reset group task baseline when updating unrelated task fields', async () => {
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const now = new Date().toISOString();
+    const channelId = Number(
+      db.prepare(`
+        INSERT INTO channels (
+          name, type, base_url, username, password, status, created_at, updated_at
+        ) VALUES ('s', 'sub2api', 'https://sub2api.example.com', 'u', 'p', 'active', ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    const taskId = Number(
+      db.prepare(`
+        INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+        VALUES (?, 'group_removed', 1, 1, 0, 60, 0, ?, ?)
+      `).run(channelId, now, now).lastInsertRowid
+    );
+    db.prepare(`
+      INSERT INTO automation_task_state (task_id, state_key, value_json, updated_at)
+      VALUES (?, 'groups', ?, ?)
+    `).run(taskId, JSON.stringify([{ name: 'old' }]), now);
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (?, 'groups', ?, ?, ?)
+    `).run(channelId, JSON.stringify([{ name: 'current' }]), JSON.stringify([{ name: 'current' }]), now);
+
+    await agent.put(`/api/channels/${channelId}/tasks/${taskId}`).send({ interval_minutes: 5 }).expect(200);
+
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(taskId) as { value_json: string };
+    expect(JSON.parse(state.value_json)).toEqual([{ name: 'old' }]);
+    db.close();
+  });
+
+  it('seeds existing group task state during migration', () => {
+    const db = createDatabase(':memory:');
+    const now = new Date().toISOString();
+    const channelId = Number(
+      db.prepare(`
+        INSERT INTO channels (
+          name, type, base_url, username, password, status, created_at, updated_at
+        ) VALUES ('s', 'sub2api', 'https://sub2api.example.com', 'u', 'p', 'active', ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    const taskId = Number(
+      db.prepare(`
+        INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+        VALUES (?, 'group_added', 1, 1, 0, 60, 0, ?, ?)
+      `).run(channelId, now, now).lastInsertRowid
+    );
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (?, 'groups', ?, ?, ?)
+    `).run(channelId, JSON.stringify([{ name: 'current' }]), JSON.stringify([{ name: 'current' }]), now);
+
+    migrate(db);
+
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(taskId) as { value_json: string };
+    expect(JSON.parse(state.value_json)).toEqual([{ name: 'current' }]);
     db.close();
   });
 });

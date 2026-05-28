@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { getEmailSettings, sendEmail } from './email.js';
-import { nowIso, parseJson, parseTask } from './db.js';
+import { nowIso, parseJson, parseTask, readChannelCache, readTaskState, upsertTaskState } from './db.js';
 import { syncChannel } from './adapters.js';
 import type { AutomationTaskRecord, BalanceSnapshot } from './types.js';
 
@@ -17,19 +17,11 @@ interface GroupInfo {
   raw: unknown;
 }
 
+const groupTaskStateKey = 'groups';
+
 function minutesSince(value: string | null, now = new Date()): number {
   if (!value) return Infinity;
   return (now.getTime() - new Date(value).getTime()) / 60000;
-}
-
-function readCache(db: DatabaseSync, channelId: number, key: string, fallback: unknown) {
-  const row = db.prepare('SELECT normalized_json FROM channel_cache WHERE channel_id = ? AND cache_key = ?').get(channelId, key) as
-    | { normalized_json: string }
-    | undefined;
-  return {
-    exists: Boolean(row),
-    value: parseJson(row?.normalized_json, fallback)
-  };
 }
 
 function stringValue(value: unknown): string | null {
@@ -53,7 +45,7 @@ function groupRatio(group: unknown): number | null {
   if (typeof group === 'number' && Number.isFinite(group)) return group;
   if (!group || typeof group !== 'object') return null;
   const record = group as Record<string, unknown>;
-  const ratioFields = ['ratio', 'rate', 'multiplier', 'group_ratio', 'model_ratio', '倍率', 'value'];
+  const ratioFields = ['ratio', 'rate', 'multiplier', 'rate_multiplier', 'rateMultiplier', 'group_ratio', 'model_ratio', '倍率', 'value'];
   for (const field of ratioFields) {
     const value = record[field];
     const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
@@ -218,7 +210,7 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
   }
   for (const channelRows of rowsByChannel.values()) {
     const first = channelRows[0];
-    const beforeGroups = readCache(db, first.channel_id, 'groups', []);
+    const beforeChannelGroups = readChannelCache(db, first.channel_id, 'groups', []);
     for (const row of channelRows) {
       db.prepare('UPDATE automation_tasks SET last_run_at = ?, updated_at = ? WHERE id = ?').run(nowIso(now), nowIso(now), row.id);
     }
@@ -228,7 +220,7 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
       // 同步失败已经写入渠道状态；这里保留旧缓存，不额外触发余额判断。
       continue;
     }
-    const afterGroups = readCache(db, first.channel_id, 'groups', []);
+    const afterGroups = readChannelCache(db, first.channel_id, 'groups', []);
     const snapshots = db.prepare(`
       SELECT * FROM balance_snapshots
       WHERE channel_id = ? AND captured_at >= ?
@@ -236,7 +228,10 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
     `).all(first.channel_id, nowIso(new Date(now.getTime() - Math.max(...channelRows.map((row) => row.lookback_minutes)) * 60000))) as unknown as BalanceSnapshot[];
     for (const row of channelRows) {
       if (isGroupTask(row)) {
+        const taskGroups = readTaskState(db, row.id, groupTaskStateKey, []);
+        const beforeGroups = taskGroups.exists ? taskGroups : beforeChannelGroups;
         await recordAlert(db, row, evaluateGroupTask(row, beforeGroups.value, afterGroups.value, row.channel_name, beforeGroups.exists), now, mailer);
+        upsertTaskState(db, row.id, groupTaskStateKey, afterGroups.value);
         continue;
       }
       const cutoff = new Date(now.getTime() - row.lookback_minutes * 60000);

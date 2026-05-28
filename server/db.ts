@@ -90,6 +90,14 @@ export function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS automation_task_state (
+      task_id INTEGER NOT NULL REFERENCES automation_tasks(id) ON DELETE CASCADE,
+      state_key TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, state_key)
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -97,6 +105,7 @@ export function migrate(db: DatabaseSync): void {
     );
   `);
   migrateAutomationTaskTypes(db);
+  seedExistingGroupTaskState(db);
 }
 
 function migrateAutomationTaskTypes(db: DatabaseSync): void {
@@ -133,6 +142,16 @@ function migrateAutomationTaskTypes(db: DatabaseSync): void {
     COMMIT;
     PRAGMA foreign_keys = ON;
   `);
+}
+
+function seedExistingGroupTaskState(db: DatabaseSync): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO automation_task_state (task_id, state_key, value_json, updated_at)
+    SELECT t.id, 'groups', c.normalized_json, ?
+    FROM automation_tasks t
+    JOIN channel_cache c ON c.channel_id = t.channel_id AND c.cache_key = 'groups'
+    WHERE t.type IN ('group_added', 'group_removed', 'group_ratio_changed')
+  `).run(nowIso());
 }
 
 export function getChannel(db: DatabaseSync, id: number): ChannelRecord | null {
@@ -174,6 +193,35 @@ export function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+export function readChannelCache<T>(db: DatabaseSync, channelId: number, key: string, fallback: T): { exists: boolean; value: T } {
+  const row = db.prepare('SELECT normalized_json FROM channel_cache WHERE channel_id = ? AND cache_key = ?').get(channelId, key) as
+    | { normalized_json: string }
+    | undefined;
+  return {
+    exists: Boolean(row),
+    value: parseJson(row?.normalized_json, fallback)
+  };
+}
+
+export function readTaskState<T>(db: DatabaseSync, taskId: number, key: string, fallback: T): { exists: boolean; value: T } {
+  const row = db.prepare('SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = ?').get(taskId, key) as
+    | { value_json: string }
+    | undefined;
+  return {
+    exists: Boolean(row),
+    value: parseJson(row?.value_json, fallback)
+  };
+}
+
+export function upsertTaskState(db: DatabaseSync, taskId: number, key: string, value: unknown): void {
+  db.prepare(`
+    INSERT INTO automation_task_state (task_id, state_key, value_json, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(task_id, state_key)
+    DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+  `).run(taskId, key, JSON.stringify(value ?? null), nowIso());
 }
 
 export function splitRecipients(value: unknown): string[] {
