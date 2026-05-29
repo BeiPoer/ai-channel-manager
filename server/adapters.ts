@@ -20,6 +20,13 @@ export type TokenGroupUpdatePayload = {
   group_id?: unknown;
 };
 
+export interface TokenModelsResult {
+  token_id: number;
+  token_name: string | null;
+  source: 'token_limits' | 'upstream_models';
+  models: string[];
+}
+
 const DEFAULT_NEW_API_QUOTA_PER_UNIT = 500000;
 
 export function normalizeBaseUrl(value: string): string {
@@ -128,6 +135,128 @@ function hasUsableSub2apiAccessToken(channel: ChannelRecord): boolean {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
+}
+
+function normalizeModelName(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  let text = String(value).trim();
+  if (!text) return null;
+  if (text.startsWith('models/')) text = text.slice('models/'.length);
+  const marker = '/models/';
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex >= 0) text = text.slice(markerIndex + marker.length);
+  return text.trim() || null;
+}
+
+function uniqueModelNames(values: unknown[]): string[] {
+  const seen = new Set<string>();
+  const models: string[] = [];
+  for (const value of values) {
+    const model = normalizeModelName(value);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    models.push(model);
+  }
+  return models;
+}
+
+function splitModelList(value: unknown): string[] {
+  if (Array.isArray(value)) return uniqueModelNames(value.flatMap((item) => splitModelList(item)));
+  if (isRecord(value)) {
+    return uniqueModelNames(
+      Object.entries(value)
+        .filter(([, enabled]) => enabled !== false && enabled !== null && enabled !== undefined)
+        .map(([model]) => model)
+    );
+  }
+  if (typeof value !== 'string') return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    const parsedModels = splitModelList(parsed);
+    if (parsedModels.length) return parsedModels;
+  } catch {
+    // Plain comma/newline separated model lists are the common format.
+  }
+  return uniqueModelNames(trimmed.split(/[\s,]+/));
+}
+
+function tokenNameOf(token: Record<string, unknown>): string | null {
+  const value = token.name ?? token.Name ?? token.title;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function tokenKeyOf(token: Record<string, unknown>): string | null {
+  const value = token.key ?? token.Key ?? token.api_key ?? token.apiKey ?? token.token;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text || text.includes('*')) return null;
+  return text;
+}
+
+function extractModelNames(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    return uniqueModelNames(
+      payload.flatMap((item) => {
+        if (isRecord(item)) return [item.id, item.name, item.model, item.display_name, item.displayName];
+        return [item];
+      })
+    );
+  }
+  if (!isRecord(payload)) return [];
+  const directArrays = [payload.data, payload.models, payload.items, payload.list].filter(Array.isArray) as unknown[][];
+  for (const arrayValue of directArrays) {
+    const models = extractModelNames(arrayValue);
+    if (models.length) return models;
+  }
+  if (isRecord(payload.models)) {
+    return uniqueModelNames(Object.keys(payload.models));
+  }
+  if (isRecord(payload.data)) {
+    const nested = extractModelNames(payload.data);
+    if (nested.length) return nested;
+  }
+  return uniqueModelNames([payload.id, payload.name, payload.model]);
+}
+
+function tokenRecordFromCache(db: DatabaseSync, channelId: number, tokenId: number): Record<string, unknown> | null {
+  const row = cachedTokens(db, channelId).find((item) => tokenIdOf(item) === tokenId);
+  return isRecord(row) ? row : null;
+}
+
+function groupPlatformOf(token: Record<string, unknown>): string {
+  const group = isRecord(token.group) ? token.group : isRecord(token.Group) ? token.Group : null;
+  const raw = token.platform ?? token.group_platform ?? token.groupPlatform ?? group?.platform ?? group?.Platform;
+  return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+}
+
+function sub2apiModelEndpointCandidates(token: Record<string, unknown>): string[] {
+  const platform = groupPlatformOf(token);
+  if (platform === 'gemini' || platform === 'google') return ['/v1beta/models', '/v1/models'];
+  if (platform === 'antigravity') return ['/antigravity/models', '/antigravity/v1/models', '/antigravity/v1beta/models', '/v1/models'];
+  if (platform === 'openai' || platform === 'anthropic' || platform === 'claude') return ['/v1/models'];
+  return ['/v1/models', '/v1beta/models', '/antigravity/models'];
+}
+
+async function fetchModelsWithBearer(channel: ChannelRecord, key: string, paths: string[]): Promise<string[]> {
+  let lastError: unknown = null;
+  for (const path of paths) {
+    try {
+      const response = await requestJson(`${channel.base_url}${path}`, {
+        headers: {
+          Authorization: `Bearer ${key}`
+        }
+      });
+      return extractModelNames(response.data);
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof UpstreamError) || ![400, 401, 403, 404].includes(error.status)) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new UpstreamError('无法读取令牌模型列表', 502);
 }
 
 function extractPage(payload: unknown): PageResult {
@@ -461,6 +590,59 @@ async function updateNewApiTokenGroup(channel: ChannelRecord, tokenId: number, p
   return updated;
 }
 
+async function getSub2apiTokenModels(db: DatabaseSync, channel: ChannelRecord, tokenId: number): Promise<TokenModelsResult> {
+  const cachedToken = tokenRecordFromCache(db, channel.id, tokenId);
+  const { token } = await sub2apiTokenDetail(db, channel, tokenId).catch((error) => {
+    if (cachedToken) return { path: '', token: cachedToken };
+    throw error;
+  });
+  const key = tokenKeyOf(token);
+  if (!key) throw new UpstreamError('sub2api 令牌详情未返回可用密钥，无法查询模型列表', 502, token);
+
+  const models = await fetchModelsWithBearer(channel, key, sub2apiModelEndpointCandidates(token));
+  return {
+    token_id: tokenId,
+    token_name: tokenNameOf(token),
+    source: 'upstream_models',
+    models
+  };
+}
+
+async function getNewApiTokenModels(channel: ChannelRecord, tokenId: number): Promise<TokenModelsResult> {
+  const token = await newApiRequest(channel, `/token/${tokenId}`);
+  if (!isRecord(token)) throw new UpstreamError('new-api 令牌详情格式异常', 502, token);
+
+  const limited = Boolean(token.model_limits_enabled);
+  const limitedModels = limited ? splitModelList(token.model_limits) : [];
+  if (limited) {
+    return {
+      token_id: tokenId,
+      token_name: tokenNameOf(token),
+      source: 'token_limits',
+      models: limitedModels
+    };
+  }
+
+  const key = tokenKeyOf(token);
+  if (key) {
+    const models = await fetchModelsWithBearer(channel, key.startsWith('sk-') ? key : `sk-${key}`, ['/v1/models']);
+    return {
+      token_id: tokenId,
+      token_name: tokenNameOf(token),
+      source: 'upstream_models',
+      models
+    };
+  }
+
+  const modelsPayload = await newApiRequest(channel, '/user/self/models');
+  return {
+    token_id: tokenId,
+    token_name: tokenNameOf(token),
+    source: 'upstream_models',
+    models: extractModelNames(modelsPayload)
+  };
+}
+
 function persistSyncResult(db: DatabaseSync, channel: ChannelRecord, result: SyncResult): void {
   migrateNewApiRawQuotaSnapshots(db, channel.id, result);
   upsertCache(db, channel.id, 'profile', result.raw.profile ?? result.profile, result.profile);
@@ -513,6 +695,12 @@ export async function updateTokenGroup(
   const cached = updateTokenCache(db, channel.id, token);
   const tokens = await refreshTokenCache(db, channel).catch(() => cached);
   return { token, tokens };
+}
+
+export async function getTokenModels(db: DatabaseSync, channelId: number, tokenId: number): Promise<TokenModelsResult> {
+  const channel = getChannel(db, channelId);
+  if (!channel) throw new UpstreamError('渠道不存在', 404);
+  return channel.type === 'sub2api' ? getSub2apiTokenModels(db, channel, tokenId) : getNewApiTokenModels(channel, tokenId);
 }
 
 export const adapterInternals = {

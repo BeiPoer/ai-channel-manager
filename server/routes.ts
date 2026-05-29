@@ -2,7 +2,7 @@ import path from 'node:path';
 import compression from 'compression';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { DatabaseSync } from 'node:sqlite';
-import { createUpstreamLoginUrl, normalizeBaseUrl, syncChannel, updateTokenGroup } from './adapters.js';
+import { createUpstreamLoginUrl, getTokenModels, normalizeBaseUrl, syncChannel, updateTokenGroup } from './adapters.js';
 import { clearSessionCookie, isAuthenticated, requireAuth, setSessionCookie, verifyAccessPassword } from './auth.js';
 import type { AppConfig } from './config.js';
 import { getChannel, getSetting, nowIso, parseTask, readChannelCache, sanitizeChannel, splitRecipients, upsertTaskState } from './db.js';
@@ -211,6 +211,13 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     ensureChannel(db, id);
     res.json(listCache(db, id, 'tokens', []));
   });
+
+  app.get('/api/channels/:id/tokens/:tokenId/models', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const tokenId = Number(req.params.tokenId);
+    if (!Number.isInteger(tokenId) || tokenId <= 0) throw new UpstreamError('无效的令牌 ID', 400);
+    res.json(await getTokenModels(db, id, tokenId));
+  }));
 
   app.put('/api/channels/:id/tokens/:tokenId/group', asyncRoute(async (req, res) => {
     const id = idParam(req);

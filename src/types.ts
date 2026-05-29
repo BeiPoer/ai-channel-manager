@@ -39,6 +39,13 @@ export interface Overview {
   history: BalanceSnapshot[];
 }
 
+export interface TokenModelsResult {
+  token_id: number;
+  token_name: string | null;
+  source: 'token_limits' | 'upstream_models';
+  models: string[];
+}
+
 export interface AutomationTask {
   id: number;
   channel_id: number;

@@ -1062,7 +1062,7 @@ small,
 
 table {
   width: 100%;
-  min-width: 680px;
+  min-width: 740px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -1129,6 +1129,13 @@ tr:last-child td {
   max-width: 196px;
 }
 
+.tokenModelsColumn {
+  width: 58px;
+  min-width: 58px;
+  max-width: 58px;
+  text-align: center;
+}
+
 .copyKeyButton {
   display: inline-flex;
   width: 100%;
@@ -1156,6 +1163,77 @@ tr:last-child td {
 
 .copyKeyButton:hover span {
   text-decoration: underline;
+}
+
+.tokenModelButton {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--primary-strong);
+  padding: 0;
+}
+
+.tokenModelButton svg {
+  flex: 0 0 auto;
+}
+
+.tokenModelButton:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.tokenModelsModal {
+  gap: 14px;
+}
+
+.tokenModelsBody {
+  display: grid;
+  gap: 12px;
+}
+
+.tokenModelsMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 10px 12px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.tokenModelsMeta strong {
+  color: var(--text);
+}
+
+.modelChipGrid {
+  display: flex;
+  max-height: min(52vh, 460px);
+  overflow: auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-content: flex-start;
+}
+
+.modelChip {
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 .inlineNotice {

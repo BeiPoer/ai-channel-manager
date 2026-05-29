@@ -1,4 +1,4 @@
-import type { AlertEvent, AutomationTask, Channel, EmailSettings, Overview } from './types';
+import type { AlertEvent, AutomationTask, Channel, EmailSettings, Overview, TokenModelsResult } from './types';
 
 type UnauthorizedHandler = () => void;
 
@@ -43,6 +43,7 @@ export const api = {
   overview: (id: number) => request<Overview>(`/api/channels/${id}/overview`),
   groups: (id: number) => request<unknown[]>(`/api/channels/${id}/groups`),
   tokens: (id: number) => request<unknown[]>(`/api/channels/${id}/tokens`),
+  tokenModels: (channelId: number, tokenId: number) => request<TokenModelsResult>(`/api/channels/${channelId}/tokens/${tokenId}/models`),
   updateTokenGroup: (channelId: number, tokenId: number, payload: { group?: string; group_id?: number }) =>
     request<{ channel: Channel; token: unknown; tokens: unknown[] }>(`/api/channels/${channelId}/tokens/${tokenId}/group`, {
       method: 'PUT',

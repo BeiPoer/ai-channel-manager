@@ -33,6 +33,39 @@ async function startSub2apiMock() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startNewApiMock() {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.headers.authorization !== 'Bearer system-token') {
+      res.writeHead(401);
+      return res.end(JSON.stringify({ success: false, message: 'missing token' }));
+    }
+    if (req.headers['new-api-user'] !== '42') {
+      res.writeHead(403);
+      return res.end(JSON.stringify({ success: false, message: 'bad user' }));
+    }
+    if (url.pathname === '/api/token/11') {
+      return res.end(JSON.stringify({
+        success: true,
+        data: {
+          id: 11,
+          name: 'token-a',
+          model_limits_enabled: true,
+          model_limits: 'gpt-4o,gpt-5'
+        }
+      }));
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ success: false, message: 'not found' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  servers.push(server);
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('mock failed');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
@@ -158,6 +191,30 @@ describe('local API', () => {
 
     const response = await agent.get(`/api/channels/${Number(result.lastInsertRowid)}/upstream-login`).expect(400);
     expect(response.body.error).toContain('当前仅支持 sub2api');
+    db.close();
+  });
+
+  it('returns token model list for a channel token', async () => {
+    const baseUrl = await startNewApiMock();
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const now = new Date().toISOString();
+    const channelId = Number(db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'system-token', '42', 'active', ?, ?)
+    `).run(baseUrl, now, now).lastInsertRowid);
+
+    const response = await agent.get(`/api/channels/${channelId}/tokens/11/models`).expect(200);
+
+    expect(response.body).toEqual({
+      token_id: 11,
+      token_name: 'token-a',
+      source: 'token_limits',
+      models: ['gpt-4o', 'gpt-5']
+    });
     db.close();
   });
 

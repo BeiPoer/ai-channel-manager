@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { syncChannel, updateTokenGroup } from './adapters.js';
+import { getTokenModels, syncChannel, updateTokenGroup } from './adapters.js';
 import { createDatabase, nowIso } from './db.js';
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void;
@@ -250,6 +250,73 @@ describe('channel adapters', () => {
       cross_group_retry: true
     });
     expect(updated.tokens).toEqual([{ id: 11, group: 'vip' }]);
+    db.close();
+  });
+
+  it('reads new-api token model limits', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
+      if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
+      if (url.pathname === '/api/token/11') {
+        return json(res, 200, {
+          success: true,
+          data: {
+            id: 11,
+            name: 'token-a',
+            model_limits_enabled: true,
+            model_limits: 'gpt-4o, claude-3-5-sonnet'
+          }
+        });
+      }
+      return json(res, 404, { success: false, message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'p', 'system-token', '42', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    const models = await getTokenModels(db, Number(result.lastInsertRowid), 11);
+
+    expect(models).toEqual({
+      token_id: 11,
+      token_name: 'token-a',
+      source: 'token_limits',
+      models: ['gpt-4o', 'claude-3-5-sonnet']
+    });
+    db.close();
+  });
+
+  it('reads sub2api token models through the token key', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (url.pathname === '/api/v1/auth/login') return json(res, 200, { code: 0, data: { access_token: 'access-a', refresh_token: 'refresh-a' } });
+      if (url.pathname === '/api/v1/keys/9') {
+        if (req.headers.authorization !== 'Bearer access-a') return json(res, 401, { message: 'unauthorized' });
+        return json(res, 200, { code: 0, data: { id: 9, name: 'token-s', key: 'sk-sub-token' } });
+      }
+      if (url.pathname === '/v1/models') {
+        if (req.headers.authorization !== 'Bearer sk-sub-token') return json(res, 401, { message: 'bad token' });
+        return json(res, 200, { object: 'list', data: [{ id: 'claude-sonnet-4-5' }, { id: 'gpt-5' }] });
+      }
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES ('s', 'sub2api', ?, 'u@example.com', 'pw', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    const models = await getTokenModels(db, Number(result.lastInsertRowid), 9);
+
+    expect(models).toEqual({
+      token_id: 9,
+      token_name: 'token-s',
+      source: 'upstream_models',
+      models: ['claude-sonnet-4-5', 'gpt-5']
+    });
     db.close();
   });
 });

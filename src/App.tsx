@@ -26,7 +26,7 @@ import {
 import { useEffect, useId, useMemo, useState } from 'react';
 import type { FormEvent, PointerEvent, ReactNode } from 'react';
 import { api, setUnauthorizedHandler } from './api';
-import type { AlertEvent, AuthState, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType } from './types';
+import type { AlertEvent, AuthState, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType, TokenModelsResult } from './types';
 
 type TabKey = 'overview' | 'automation' | 'alerts';
 
@@ -1075,6 +1075,62 @@ function BalanceChart({ history }: { history: Overview['history'] }) {
   );
 }
 
+function TokenModelsModal({
+  state,
+  onClose
+}: {
+  state: {
+    row: Record<string, unknown>;
+    result?: TokenModelsResult;
+    loading: boolean;
+    error?: string;
+  };
+  onClose: () => void;
+}) {
+  const tokenName = state.result?.token_name || valuePreview(state.row.name ?? state.row.id);
+  const models = state.result?.models || [];
+  const sourceLabel = state.result?.source === 'token_limits' ? '令牌限制' : '上游模型接口';
+
+  return (
+    <div className="modalBackdrop">
+      <div className="modal wideModal tokenModelsModal" role="dialog" aria-modal="true" aria-labelledby="token-models-title">
+        <div className="modalHeader">
+          <div>
+            <span className="modalEyebrow">TOKEN MODELS</span>
+            <h2 id="token-models-title">支持模型</h2>
+            <p>{tokenName}</p>
+          </div>
+          <button type="button" className="iconButton" onClick={onClose} aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+
+        {state.loading && <LoadingState label="正在读取模型列表" />}
+        {state.error && <div className="inlineNotice error">{state.error}</div>}
+        {!state.loading && !state.error && (
+          <div className="tokenModelsBody">
+            <div className="tokenModelsMeta">
+              <span>{sourceLabel}</span>
+              <strong>{models.length ? `${models.length} 个模型` : '未返回模型'}</strong>
+            </div>
+            {models.length ? (
+              <div className="modelChipGrid">
+                {models.map((model) => (
+                  <span className="modelChip" key={model} title={model}>
+                    {model}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="emptyState">当前令牌未返回可展示的模型列表</div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TokenTable({ overview, onTokensChanged }: { overview: Overview; onTokensChanged: (tokens: unknown[]) => void }) {
   const rows = asRows(overview.tokens);
   const columns = tokenColumns(rows);
@@ -1082,6 +1138,12 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
   const trailingColumns = columns.slice(4);
   const options = tokenGroupOptions(overview, rows);
   const [updatingTokenId, setUpdatingTokenId] = useState<number | null>(null);
+  const [modelsState, setModelsState] = useState<{
+    row: Record<string, unknown>;
+    result?: TokenModelsResult;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
   const [message, setMessage] = useState<MessageState>(null);
 
   if (!rows.length) return <div className="emptyState">暂无令牌缓存</div>;
@@ -1115,6 +1177,19 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
     }
   }
 
+  async function showTokenModels(row: Record<string, unknown>) {
+    const tokenId = tokenIdOf(row);
+    if (!tokenId) return;
+    setMessage(null);
+    setModelsState({ row, loading: true });
+    try {
+      const result = await api.tokenModels(overview.channel.id, tokenId);
+      setModelsState({ row, result, loading: false });
+    } catch (err) {
+      setModelsState({ row, loading: false, error: (err as Error).message || '模型列表读取失败' });
+    }
+  }
+
   function renderTokenCell(row: Record<string, unknown>, column: string) {
     const preview = valuePreview(row[column]);
     if (column === 'key') {
@@ -1145,6 +1220,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
                 <th key={column}>{columnLabel(column)}</th>
               ))}
               <th className="tokenGroupColumn">分组</th>
+              <th className="tokenModelsColumn">模型</th>
               {trailingColumns.map((column) => (
                 <th key={column}>{columnLabel(column)}</th>
               ))}
@@ -1178,6 +1254,18 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
                       ))}
                     </select>
                   </td>
+                  <td className="tokenModelsColumn">
+                    <button
+                      type="button"
+                      className="tokenModelButton"
+                      disabled={!tokenId}
+                      onClick={() => void showTokenModels(row)}
+                      aria-label="查看支持模型"
+                      title="查看支持模型"
+                    >
+                      <Search size={15} />
+                    </button>
+                  </td>
                   {trailingColumns.map((column) => renderTokenCell(row, column))}
                 </tr>
               );
@@ -1185,6 +1273,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
           </tbody>
         </table>
       </div>
+      {modelsState && <TokenModelsModal state={modelsState} onClose={() => setModelsState(null)} />}
     </div>
   );
 }
