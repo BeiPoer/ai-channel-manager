@@ -197,6 +197,14 @@ function tokenKeyOf(token: Record<string, unknown>): string | null {
   return text;
 }
 
+function tokenKeyFromPayload(payload: unknown): string | null {
+  if (isRecord(payload)) return tokenKeyOf(payload);
+  if (payload === null || payload === undefined) return null;
+  const text = String(payload).trim();
+  if (!text || text.includes('*')) return null;
+  return text;
+}
+
 function extractModelNames(payload: unknown): string[] {
   if (Array.isArray(payload)) {
     return uniqueModelNames(
@@ -218,6 +226,10 @@ function extractModelNames(payload: unknown): string[] {
   if (isRecord(payload.data)) {
     const nested = extractModelNames(payload.data);
     if (nested.length) return nested;
+  }
+  const nestedArrays = Object.values(payload).filter(Array.isArray) as unknown[][];
+  if (nestedArrays.length) {
+    return uniqueModelNames(nestedArrays.flatMap((arrayValue) => extractModelNames(arrayValue)));
   }
   return uniqueModelNames([payload.id, payload.name, payload.model]);
 }
@@ -241,6 +253,10 @@ function sub2apiModelEndpointCandidates(token: Record<string, unknown>): string[
   return ['/v1/models', '/v1beta/models', '/antigravity/models'];
 }
 
+function isOptionalUpstreamMiss(error: unknown): boolean {
+  return error instanceof UpstreamError && [400, 401, 403, 404, 405, 502].includes(error.status);
+}
+
 async function fetchModelsWithBearer(channel: ChannelRecord, key: string, paths: string[]): Promise<string[]> {
   let lastError: unknown = null;
   for (const path of paths) {
@@ -257,6 +273,15 @@ async function fetchModelsWithBearer(channel: ChannelRecord, key: string, paths:
     }
   }
   throw lastError instanceof Error ? lastError : new UpstreamError('无法读取令牌模型列表', 502);
+}
+
+async function tryFetchModelsWithBearer(channel: ChannelRecord, key: string, paths: string[]): Promise<string[] | null> {
+  try {
+    return await fetchModelsWithBearer(channel, key, paths);
+  } catch (error) {
+    if (isOptionalUpstreamMiss(error)) return null;
+    throw error;
+  }
 }
 
 function extractPage(payload: unknown): PageResult {
@@ -608,9 +633,14 @@ async function getSub2apiTokenModels(db: DatabaseSync, channel: ChannelRecord, t
   };
 }
 
-async function getNewApiTokenModels(channel: ChannelRecord, tokenId: number): Promise<TokenModelsResult> {
-  const token = await newApiRequest(channel, `/token/${tokenId}`);
-  if (!isRecord(token)) throw new UpstreamError('new-api 令牌详情格式异常', 502, token);
+async function getNewApiTokenModels(db: DatabaseSync, channel: ChannelRecord, tokenId: number): Promise<TokenModelsResult> {
+  const cachedToken = tokenRecordFromCache(db, channel.id, tokenId);
+  const tokenPayload = await newApiRequest(channel, `/token/${tokenId}`).catch((error) => {
+    if (cachedToken && isOptionalUpstreamMiss(error)) return cachedToken;
+    throw error;
+  });
+  if (!isRecord(tokenPayload)) throw new UpstreamError('new-api 令牌详情格式异常', 502, tokenPayload);
+  const token = { ...(cachedToken || {}), ...tokenPayload };
 
   const limited = Boolean(token.model_limits_enabled);
   const limitedModels = limited ? splitModelList(token.model_limits) : [];
@@ -623,23 +653,39 @@ async function getNewApiTokenModels(channel: ChannelRecord, tokenId: number): Pr
     };
   }
 
-  const key = tokenKeyOf(token);
+  const fullKey = await newApiRequest(channel, `/token/${tokenId}/key`, { method: 'POST' })
+    .then(tokenKeyFromPayload)
+    .catch((error) => {
+      if (isOptionalUpstreamMiss(error)) return null;
+      throw error;
+    });
+  const key = fullKey || tokenKeyOf(token);
   if (key) {
-    const models = await fetchModelsWithBearer(channel, key.startsWith('sk-') ? key : `sk-${key}`, ['/v1/models']);
-    return {
-      token_id: tokenId,
-      token_name: tokenNameOf(token),
-      source: 'upstream_models',
-      models
-    };
+    const models = await tryFetchModelsWithBearer(channel, key.startsWith('sk-') ? key : `sk-${key}`, ['/v1/models', '/v1beta/models']);
+    if (models) {
+      return {
+        token_id: tokenId,
+        token_name: tokenNameOf(token),
+        source: 'upstream_models',
+        models
+      };
+    }
   }
 
-  const modelsPayload = await newApiRequest(channel, '/user/self/models');
+  const fallbackPayloads = await Promise.all(
+    ['/user/self/models', '/channel/models_enabled', '/channel/models'].map((path) =>
+      newApiRequest(channel, path).catch((error) => {
+        if (isOptionalUpstreamMiss(error)) return null;
+        throw error;
+      })
+    )
+  );
+  const models = uniqueModelNames(fallbackPayloads.flatMap((payload) => extractModelNames(payload)));
   return {
     token_id: tokenId,
     token_name: tokenNameOf(token),
     source: 'upstream_models',
-    models: extractModelNames(modelsPayload)
+    models
   };
 }
 
@@ -700,7 +746,7 @@ export async function updateTokenGroup(
 export async function getTokenModels(db: DatabaseSync, channelId: number, tokenId: number): Promise<TokenModelsResult> {
   const channel = getChannel(db, channelId);
   if (!channel) throw new UpstreamError('渠道不存在', 404);
-  return channel.type === 'sub2api' ? getSub2apiTokenModels(db, channel, tokenId) : getNewApiTokenModels(channel, tokenId);
+  return channel.type === 'sub2api' ? getSub2apiTokenModels(db, channel, tokenId) : getNewApiTokenModels(db, channel, tokenId);
 }
 
 export const adapterInternals = {

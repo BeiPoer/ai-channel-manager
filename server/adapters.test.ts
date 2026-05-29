@@ -289,6 +289,93 @@ describe('channel adapters', () => {
     db.close();
   });
 
+  it('reads new-api token models through the full token key endpoint', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (url.pathname === '/api/token/11' || url.pathname === '/api/token/11/key') {
+        if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
+        if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
+      }
+      if (url.pathname === '/api/token/11') {
+        return json(res, 200, {
+          success: true,
+          data: {
+            id: 11,
+            name: 'token-a',
+            key: 'sk-toke**********1234',
+            model_limits_enabled: false
+          }
+        });
+      }
+      if (url.pathname === '/api/token/11/key' && req.method === 'POST') {
+        return json(res, 200, { success: true, data: { key: 'new-api-token-key' } });
+      }
+      if (url.pathname === '/v1/models') {
+        if (req.headers.authorization !== 'Bearer sk-new-api-token-key') return json(res, 401, { error: { message: 'bad token' } });
+        return json(res, 200, { object: 'list', data: [{ id: 'gpt-4o' }, { id: 'claude-sonnet-4-5' }] });
+      }
+      return json(res, 404, { success: false, message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'p', 'system-token', '42', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    const models = await getTokenModels(db, Number(result.lastInsertRowid), 11);
+
+    expect(models).toEqual({
+      token_id: 11,
+      token_name: 'token-a',
+      source: 'upstream_models',
+      models: ['gpt-4o', 'claude-sonnet-4-5']
+    });
+    db.close();
+  });
+
+  it('falls back to new-api channel models when token model endpoints are unavailable', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (url.pathname === '/api/token/11' || url.pathname === '/api/token/11/key' || url.pathname.startsWith('/api/channel/')) {
+        if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
+        if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
+      }
+      if (url.pathname === '/api/token/11') {
+        return json(res, 200, {
+          success: true,
+          data: {
+            id: 11,
+            name: 'token-a',
+            model_limits_enabled: false
+          }
+        });
+      }
+      if (url.pathname === '/api/token/11/key') return json(res, 404, { success: false, message: 'not found' });
+      if (url.pathname === '/api/user/self/models') return json(res, 404, { success: false, message: 'not found' });
+      if (url.pathname === '/api/channel/models_enabled') {
+        return json(res, 200, { success: true, data: ['gpt-4o-mini', 'gpt-5'] });
+      }
+      return json(res, 404, { success: false, message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'p', 'system-token', '42', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    const models = await getTokenModels(db, Number(result.lastInsertRowid), 11);
+
+    expect(models).toEqual({
+      token_id: 11,
+      token_name: 'token-a',
+      source: 'upstream_models',
+      models: ['gpt-4o-mini', 'gpt-5']
+    });
+    db.close();
+  });
+
   it('reads sub2api token models through the token key', async () => {
     const baseUrl = await startMock((req, res, url) => {
       if (url.pathname === '/api/v1/auth/login') return json(res, 200, { code: 0, data: { access_token: 'access-a', refresh_token: 'refresh-a' } });
