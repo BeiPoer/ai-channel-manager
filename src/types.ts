@@ -81,6 +81,7 @@ export interface EmailSettings {
   smtp_user: string;
   smtp_password?: string;
   smtp_from: string;
+  subject_prefix: string;
   default_recipients: string[];
   default_interval_minutes: number;
   has_smtp_password?: boolean;

@@ -12,6 +12,7 @@ export function getEmailSettings(db: DatabaseSync, includePassword = false): Ema
     smtp_user: getSetting(db, 'smtp_user', ''),
     smtp_password: includePassword ? password : undefined,
     smtp_from: getSetting(db, 'smtp_from', ''),
+    subject_prefix: getSetting(db, 'subject_prefix', ''),
     default_recipients: splitRecipients(getSetting(db, 'default_recipients', '')),
     default_interval_minutes: Number(getSetting(db, 'default_interval_minutes', '30')) || 30,
     has_smtp_password: Boolean(password)
@@ -27,6 +28,7 @@ export function saveEmailSettings(db: DatabaseSync, payload: Partial<EmailSettin
     setSetting(db, 'smtp_password', String(payload.smtp_password));
   }
   if (payload.smtp_from !== undefined) setSetting(db, 'smtp_from', String(payload.smtp_from || '').trim());
+  if (payload.subject_prefix !== undefined) setSetting(db, 'subject_prefix', String(payload.subject_prefix || '').trim());
   if (payload.default_recipients !== undefined) {
     setSetting(db, 'default_recipients', splitRecipients(payload.default_recipients).join(','));
   }
@@ -56,9 +58,8 @@ export async function sendEmail(db: DatabaseSync, recipients: string[], subject:
   const info = await transporter.sendMail({
     from: settings.smtp_from,
     to: to.join(','),
-    subject,
+    subject: `${settings.subject_prefix || ''}${subject}`,
     text
   });
   return String(info.messageId || 'sent');
 }
-

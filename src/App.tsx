@@ -46,6 +46,7 @@ const emptyEmail: EmailSettings = {
   smtp_secure: false,
   smtp_user: '',
   smtp_from: '',
+  subject_prefix: '',
   default_recipients: [],
   default_interval_minutes: 30
 };
@@ -855,6 +856,14 @@ function EmailModal({ onClose }: { onClose: () => void }) {
         <label>
           发件人
           <input value={settings.smtp_from} onChange={(event) => setSettings({ ...settings, smtp_from: event.target.value })} />
+        </label>
+        <label>
+          邮件标题前缀
+          <input
+            value={settings.subject_prefix}
+            onChange={(event) => setSettings({ ...settings, subject_prefix: event.target.value })}
+            placeholder="例如：【abc】"
+          />
         </label>
         <label>
           默认收件人
