@@ -419,6 +419,11 @@ small,
   color: var(--error);
 }
 
+.statusBadge.neutral {
+  background: var(--surface-muted);
+  color: var(--muted-strong);
+}
+
 .typeBadge {
   height: 22px;
   padding: 0 8px;
@@ -1279,7 +1284,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   min-width: 0;
   width: 100%;
   border: 1px solid var(--border);
@@ -1296,9 +1302,14 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+select {
+  height: 38px;
 }
 
 .formGrid {
@@ -1420,7 +1431,8 @@ textarea:focus {
   color: var(--primary-strong);
 }
 
-.taskType.group_ratio_changed {
+.taskType.group_ratio_changed,
+.taskType.account_error {
   background: var(--cyan-soft);
   color: var(--cyan);
 }
@@ -1611,6 +1623,139 @@ textarea:focus {
   line-height: 1.6;
 }
 
+.moduleShell {
+  min-height: 100vh;
+  padding: 28px;
+}
+
+.moduleHeader,
+.moduleActions,
+.moduleCard,
+.moduleCardBody,
+.filterBar,
+.paginationBar,
+.paginationActions {
+  display: flex;
+  align-items: center;
+}
+
+.moduleHeader {
+  justify-content: space-between;
+  gap: 18px;
+  max-width: 1120px;
+  margin: 0 auto 18px;
+}
+
+.moduleHeader p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.moduleActions {
+  gap: 8px;
+}
+
+.moduleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.moduleCard {
+  min-height: 178px;
+  align-items: flex-start;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(23, 32, 51, 0.08);
+  color: var(--text);
+  padding: 20px;
+  text-align: left;
+}
+
+.moduleCard:hover {
+  border-color: #bfdbfe;
+  background: #fbfdff;
+}
+
+.moduleIcon {
+  display: inline-flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.moduleIcon.accent {
+  background: var(--cyan-soft);
+  color: var(--cyan);
+}
+
+.moduleCardBody {
+  min-width: 0;
+  align-items: flex-start;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.moduleCardBody strong {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.moduleCardBody span {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.moduleAction {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--primary-strong);
+  font-size: 13px;
+  font-weight: 750;
+  padding: 8px 10px;
+}
+
+.filterBar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(5, minmax(120px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.filterRefresh {
+  height: 38px;
+}
+
+.ownedAccountTable table {
+  min-width: 1160px;
+}
+
+.paginationBar {
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.paginationActions {
+  gap: 8px;
+}
+
 .loginShell {
   display: flex;
   min-height: 100vh;
@@ -1675,7 +1820,9 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .panelGrid {
+  .panelGrid,
+  .moduleGrid,
+  .filterBar {
     grid-template-columns: 1fr;
   }
 }
@@ -1738,6 +1885,17 @@ textarea:focus {
 
   .railStats {
     grid-template-columns: 1fr;
+  }
+
+  .moduleShell {
+    padding: 16px;
+  }
+
+  .moduleHeader,
+  .moduleCard,
+  .paginationBar {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .channelItem {

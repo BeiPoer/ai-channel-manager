@@ -66,6 +66,50 @@ async function startNewApiMock() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startOwnedSub2apiMock(handler?: (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => boolean | void) {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    res.setHeader('Content-Type', 'application/json');
+    const handled = handler?.(req, res, url);
+    if (handled) return;
+    if (req.headers['x-api-key'] !== 'admin-key') {
+      res.writeHead(401);
+      return res.end(JSON.stringify({ code: 401, message: 'bad admin key' }));
+    }
+    if (url.pathname === '/api/v1/admin/groups/all') {
+      return res.end(JSON.stringify({ code: 0, data: [{ id: 1, name: 'default', platform: 'openai', status: 'active' }] }));
+    }
+    if (url.pathname === '/api/v1/admin/accounts') {
+      return res.end(JSON.stringify({
+        code: 0,
+        data: {
+          items: [
+            {
+              id: 11,
+              name: 'account-a',
+              platform: 'openai',
+              type: 'oauth',
+              status: 'active',
+              group_ids: [String(url.searchParams.get('group') || '1')]
+            }
+          ],
+          total: 1,
+          page: Number(url.searchParams.get('page') || 1),
+          page_size: Number(url.searchParams.get('page_size') || 20),
+          pages: 1
+        }
+      }));
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ message: 'not found' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  servers.push(server);
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('mock failed');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
@@ -306,6 +350,74 @@ describe('local API', () => {
 
     const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(taskId) as { value_json: string };
     expect(JSON.parse(state.value_json)).toEqual([{ name: 'current' }]);
+    db.close();
+  });
+
+  it('manages owned sub2api sites and proxies paginated accounts', async () => {
+    let accountQuery: URLSearchParams | null = null;
+    const baseUrl = await startOwnedSub2apiMock((req, res, url) => {
+      if (req.headers['x-api-key'] !== 'admin-key') {
+        res.writeHead(401);
+        res.end(JSON.stringify({ code: 401, message: 'bad admin key' }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/groups/all') {
+        res.end(JSON.stringify({ code: 0, data: [{ id: 9, name: 'vip', platform: 'openai', status: 'active' }] }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/accounts') {
+        accountQuery = url.searchParams;
+        res.end(JSON.stringify({
+          code: 0,
+          data: {
+            items: [{ id: 22, name: 'acc-b', platform: 'openai', type: 'oauth', status: 'active', group_ids: [url.searchParams.get('group')] }],
+            total: 1,
+            page: 2,
+            page_size: 5,
+            pages: 1
+          }
+        }));
+        return true;
+      }
+      return false;
+    });
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    await request(app).get('/api/owned-sites').expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+
+    const created = await agent
+      .post('/api/owned-sites')
+      .send({ type: 'sub2api', base_url: baseUrl, name: 'owned', admin_api_key: 'admin-key' })
+      .expect(201);
+    expect(created.body.has_admin_api_key).toBe(true);
+    expect(created.body.status).toBe('active');
+
+    const accounts = await agent
+      .get(`/api/owned-sites/${created.body.id}/accounts?page=2&page_size=5&search=acc&group=9&status=active&sort_by=name&sort_order=desc`)
+      .expect(200);
+    expect(accounts.body.items[0].id).toBe('22');
+    expect(accountQuery?.get('page')).toBe('2');
+    expect(accountQuery?.get('page_size')).toBe('5');
+    expect(accountQuery?.get('search')).toBe('acc');
+    expect(accountQuery?.get('group')).toBe('9');
+    expect(accountQuery?.get('status')).toBe('active');
+    expect(accountQuery?.get('sort_by')).toBe('name');
+    expect(accountQuery?.get('sort_order')).toBe('desc');
+
+    await agent.put(`/api/owned-sites/${created.body.id}`).send({ name: 'renamed', admin_api_key: '' }).expect(200);
+    const row = db.prepare('SELECT name, admin_api_key FROM owned_sites WHERE id = ?').get(created.body.id) as { name: string; admin_api_key: string };
+    expect(row.name).toBe('renamed');
+    expect(row.admin_api_key).toBe('admin-key');
+
+    await agent
+      .post(`/api/owned-sites/${created.body.id}/tasks`)
+      .send({ target_type: 'group', target_group_id: '9', target_group_name: 'vip', interval_minutes: 5, cooldown_minutes: 10 })
+      .expect(201);
+    await agent.delete(`/api/owned-sites/${created.body.id}`).expect(204);
+    const taskCount = db.prepare('SELECT COUNT(*) AS count FROM owned_site_automation_tasks').get() as { count: number };
+    expect(taskCount.count).toBe(0);
     db.close();
   });
 });

@@ -1,11 +1,13 @@
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   Bell,
   CheckCircle2,
   CircleDollarSign,
   Clock3,
   Database,
+  Home,
   KeyRound,
   Mail,
   Pencil,
@@ -16,19 +18,42 @@ import {
   RefreshCw,
   Search,
   Send,
+  Server,
   Settings,
   ShieldAlert,
   Trash2,
+  Users,
   WalletCards,
   X,
   Zap
 } from 'lucide-react';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { FormEvent, PointerEvent, ReactNode } from 'react';
 import { api, setUnauthorizedHandler } from './api';
-import type { AlertEvent, AuthState, AutomationTask, Channel, ChannelType, EmailSettings, Overview, TaskType, TokenModelsResult } from './types';
+import { buildAppPath, normalizeRoute, parseAppRoute } from './routing';
+import type { AppRoute, ChannelTabKey, NavigationMode, OwnedSiteTabKey } from './routing';
+import type {
+  AlertEvent,
+  AuthState,
+  AutomationTask,
+  Channel,
+  ChannelType,
+  EmailSettings,
+  Overview,
+  OwnedSite,
+  OwnedSiteAccount,
+  OwnedSiteAlertEvent,
+  OwnedSiteAutomationTask,
+  OwnedSiteGroup,
+  OwnedSiteTaskTargetType,
+  PaginatedResult,
+  TaskType,
+  TokenModelsResult
+} from './types';
 
-type TabKey = 'overview' | 'automation' | 'alerts';
+type TabKey = ChannelTabKey;
+type AppModule = AppRoute['module'];
+type OwnedSiteRoute = Extract<AppRoute, { module: 'owned-sites' }>;
 
 type MessageState = {
   tone: 'success' | 'error';
@@ -39,6 +64,13 @@ type GroupOption = {
   value: string;
   label: string;
 };
+
+const defaultRoute: AppRoute = { module: 'home' };
+
+function readCurrentRoute(): AppRoute {
+  if (typeof window === 'undefined') return defaultRoute;
+  return parseAppRoute(window.location.pathname);
+}
 
 const emptyEmail: EmailSettings = {
   smtp_host: '',
@@ -63,6 +95,22 @@ const statusCopy: Record<Channel['status'], { label: string; caption: string }> 
   active: { label: '正常', caption: '可用' },
   syncing: { label: '同步中', caption: '处理中' },
   error: { label: '异常', caption: '需处理' }
+};
+
+const accountStatusCopy: Record<string, string> = {
+  active: '正常',
+  inactive: '停用',
+  disabled: '禁用',
+  error: '错误',
+  rate_limited: '限速',
+  temp_unschedulable: '临时不可调度',
+  unschedulable: '不可调度',
+  pending: '待处理'
+};
+
+const ownedTaskTargetCopy: Record<OwnedSiteTaskTargetType, string> = {
+  account: '指定账号',
+  group: '指定分组'
 };
 
 const taskTypeCopy: Record<TaskType, string> = {
@@ -97,6 +145,17 @@ const columnLabels: Record<string, string> = {
   group_id: '分组 ID',
   groupId: '分组 ID',
   allowed_groups: '允许分组',
+  groups: '分组',
+  group_ids: '分组 ID',
+  schedulable: '可调度',
+  error_message: '错误信息',
+  before_status: '原状态',
+  after_status: '新状态',
+  target_type: '目标类型',
+  target_id: '目标 ID',
+  account_id: '账号 ID',
+  account_name: '账号名称',
+  site_name: '站点名称',
   ratio: '倍率',
   rate: '倍率',
   rate_multiplier: '倍率',
@@ -483,6 +542,27 @@ function credentialLabel(channel: Channel) {
   return channel.has_newapi_access_token ? '令牌已保存' : '待配置令牌';
 }
 
+function siteCredentialLabel(site: OwnedSite) {
+  return site.has_admin_api_key ? 'Admin API Key 已保存' : '待配置 Admin API Key';
+}
+
+function groupLabel(group: OwnedSiteGroup) {
+  return group.name && group.name !== group.id ? `${group.name}（${group.id}）` : group.id || group.name || '-';
+}
+
+function accountGroupLabel(account: OwnedSiteAccount, groups: OwnedSiteGroup[] = []) {
+  const byId = new Map(groups.map((group) => [group.id, group.name || group.id]));
+  const names = account.groups
+    .map((group) => groupNameFrom(group.name ?? group.title ?? group.id))
+    .filter(Boolean);
+  const ids = account.group_ids.map((id) => byId.get(id) || id).filter(Boolean);
+  return Array.from(new Set([...names, ...ids])).join('、') || '-';
+}
+
+function accountStatusLabel(status: string) {
+  return accountStatusCopy[status] || status || '-';
+}
+
 function isGroupTaskType(type: TaskType) {
   return type === 'group_added' || type === 'group_removed' || type === 'group_ratio_changed';
 }
@@ -495,12 +575,17 @@ function taskSummary(task: AutomationTask) {
   return '发现分组倍率变化时告警';
 }
 
-function StatusBadge({ status }: { status: Channel['status'] }) {
+function StatusBadge({ status }: { status: Channel['status'] | OwnedSite['status'] }) {
   return <span className={`statusBadge ${status}`}>{statusCopy[status].label}</span>;
 }
 
-function TypeBadge({ type }: { type: ChannelType }) {
+function TypeBadge({ type }: { type: ChannelType | OwnedSite['type'] }) {
   return <span className={`typeBadge ${type}`}>{type === 'sub2api' ? 'sub2api' : 'new-api'}</span>;
+}
+
+function AccountStatusBadge({ status }: { status: string }) {
+  const tone = status === 'error' ? 'error' : status === 'active' ? 'active' : status === 'rate_limited' ? 'syncing' : 'neutral';
+  return <span className={`statusBadge ${tone}`}>{accountStatusLabel(status)}</span>;
 }
 
 function SectionHeader({
@@ -1659,12 +1744,1103 @@ function AlertsPanel({ alerts }: { alerts: AlertEvent[] }) {
   );
 }
 
+function HomeSwitcher({
+  onSelect,
+  onLogout,
+  onEmailSettings
+}: {
+  onSelect: (module: Exclude<AppModule, 'home'>) => void;
+  onLogout: () => void | Promise<void>;
+  onEmailSettings: () => void;
+}) {
+  return (
+    <main className="moduleShell">
+      <header className="moduleHeader">
+        <div>
+          <span className="brandKicker">AI OPS</span>
+          <h1>AI 管理台</h1>
+          <p>选择要进入的管理模块。</p>
+        </div>
+        <div className="moduleActions">
+          <button className="iconButton" onClick={onEmailSettings} aria-label="邮件设置">
+            <Settings size={18} />
+          </button>
+          <button className="iconButton" onClick={onLogout} aria-label="退出登录">
+            <LogOut size={18} />
+          </button>
+        </div>
+      </header>
+
+      <section className="moduleGrid" aria-label="模块选择">
+        <button className="moduleCard" type="button" onClick={() => onSelect('channels')}>
+          <span className="moduleIcon">
+            <Database size={24} />
+          </span>
+          <span className="moduleCardBody">
+            <strong>渠道管理</strong>
+            <span>管理上游 sub2api / new-api 渠道，查看余额、分组、令牌和渠道告警。</span>
+          </span>
+          <span className="moduleAction">进入模块</span>
+        </button>
+        <button className="moduleCard" type="button" onClick={() => onSelect('owned-sites')}>
+          <span className="moduleIcon accent">
+            <Server size={24} />
+          </span>
+          <span className="moduleCardBody">
+            <strong>自有站点管理</strong>
+            <span>接入自己的 sub2api 站点，查看分组和账号，并监控账号错误状态。</span>
+          </span>
+          <span className="moduleAction">进入模块</span>
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function OwnedSiteModal({
+  site,
+  onClose,
+  onSaved
+}: {
+  site: OwnedSite | null;
+  onClose: () => void;
+  onSaved: (site: OwnedSite) => void | Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    name: site?.name || '',
+    base_url: site?.base_url || '',
+    admin_api_key: ''
+  });
+  const [checkOnSave, setCheckOnSave] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      const payload = {
+        ...form,
+        type: 'sub2api',
+        check: site ? checkOnSave : undefined
+      };
+      const saved = site ? await api.updateOwnedSite(site.id, payload) : await api.createOwnedSite(payload);
+      await onSaved(saved);
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modalBackdrop">
+      <form className="modal" onSubmit={submit}>
+        <div className="modalHeader">
+          <div>
+            <span className="modalEyebrow">{site ? 'OWNED SITE EDIT' : 'NEW OWNED SITE'}</span>
+            <h2>{site ? '编辑自有站点' : '添加自有站点'}</h2>
+            <p>当前仅支持 sub2api 站点，通过后台 Admin API Key 接入。</p>
+          </div>
+          <button type="button" className="iconButton" onClick={onClose} aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+
+        <label>
+          站点名称
+          <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：主站" />
+        </label>
+        <label>
+          Base URL
+          <input
+            required
+            value={form.base_url}
+            onChange={(event) => setForm({ ...form, base_url: event.target.value })}
+            placeholder="https://sub2api.example.com"
+          />
+        </label>
+        <label>
+          Admin API Key
+          <input
+            required={!site}
+            type="password"
+            value={form.admin_api_key}
+            onChange={(event) => setForm({ ...form, admin_api_key: event.target.value })}
+            placeholder={site?.has_admin_api_key ? '已保存，留空保持不变' : 'x-api-key'}
+          />
+        </label>
+        {site && (
+          <label className="checkboxLabel">
+            <input type="checkbox" checked={checkOnSave} onChange={(event) => setCheckOnSave(event.target.checked)} />
+            保存后立即检查连接
+          </label>
+        )}
+        {error && <div className="errorBox">{error}</div>}
+        <div className="modalFooter">
+          <button type="button" className="ghostButton" onClick={onClose}>
+            取消
+          </button>
+          <button type="submit" className="primaryButton" disabled={saving}>
+            {saving ? '保存中' : site ? '保存站点' : '添加站点'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function OwnedSiteOverview({
+  site,
+  onSiteChanged
+}: {
+  site: OwnedSite;
+  onSiteChanged: (site: OwnedSite) => void | Promise<void>;
+}) {
+  const [stats, setStats] = useState<{ groups: number; accounts: number; errors: number } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  async function loadStats() {
+    setLoading(true);
+    setError('');
+    try {
+      const [groups, accounts, errors] = await Promise.all([
+        api.ownedSiteGroups(site.id),
+        api.ownedSiteAccounts(site.id, { page: 1, page_size: 1 }),
+        api.ownedSiteAccounts(site.id, { page: 1, page_size: 1, status: 'error' })
+      ]);
+      setStats({ groups: groups.length, accounts: accounts.total, errors: errors.total });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadStats();
+  }, [site.id]);
+
+  async function check() {
+    setChecking(true);
+    setError('');
+    setMessage('');
+    try {
+      const checked = await api.checkOwnedSite(site.id);
+      await onSiteChanged(checked);
+      setMessage('连接检查成功');
+      await loadStats();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="metricGrid">
+        <MetricCard
+          label="站点健康"
+          value={statusCopy[site.status].label}
+          meta={`最近检查 ${formatTime(site.last_check_at, '尚未检查')}`}
+          icon={site.status === 'active' ? <CheckCircle2 size={18} /> : <ShieldAlert size={18} />}
+          tone={site.status === 'active' ? 'success' : site.status === 'syncing' ? 'warning' : 'error'}
+        />
+        <MetricCard
+          label="分组数量"
+          value={loading && !stats ? '-' : stats?.groups ?? '-'}
+          meta="实时读取自有站点后台"
+          icon={<Users size={18} />}
+          tone="accent"
+        />
+        <MetricCard
+          label="账号状态"
+          value={loading && !stats ? '-' : stats ? `${formatNumber(stats.errors)} / ${formatNumber(stats.accounts)}` : '-'}
+          meta="错误账号 / 账号总数"
+          icon={<AlertTriangle size={18} />}
+          tone={stats?.errors ? 'error' : 'default'}
+        />
+      </div>
+
+      <div className="overviewGrid">
+        <DataSection title="连接状态" description="站点接入信息和最近检查结果" icon={<Server size={17} />}>
+          <div className="snapshotList">
+            <div>
+              <span>站点</span>
+              <strong>{site.name}</strong>
+            </div>
+            <div>
+              <span>地址</span>
+              <strong>{site.base_url}</strong>
+            </div>
+            <div>
+              <span>凭据</span>
+              <strong>{siteCredentialLabel(site)}</strong>
+            </div>
+            <div>
+              <span>更新时间</span>
+              <strong>{formatShortTime(site.updated_at, '-')}</strong>
+            </div>
+          </div>
+          {site.last_error && (
+            <div className="inlineNotice error">
+              <span>{site.last_error}</span>
+            </div>
+          )}
+          {message && <div className="inlineNotice success">{message}</div>}
+          {error && <div className="inlineNotice error">{error}</div>}
+        </DataSection>
+
+        <DataSection
+          title="快速检查"
+          description="立即调用 sub2api 后台接口验证 Admin API Key"
+          icon={<RefreshCw size={17} />}
+        >
+          <button className="primaryButton fullWidth" onClick={check} disabled={checking} type="button">
+            <RefreshCw size={16} className={checking ? 'spin' : ''} />
+            {checking ? '检查中' : '检查连接'}
+          </button>
+          {loading && <LoadingState label="正在读取统计数据" />}
+        </DataSection>
+      </div>
+    </>
+  );
+}
+
+function OwnedSiteGroupsPanel({ site }: { site: OwnedSite }) {
+  const [groups, setGroups] = useState<OwnedSiteGroup[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  function load() {
+    setLoading(true);
+    setError('');
+    void api
+      .ownedSiteGroups(site.id)
+      .then(setGroups)
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load();
+  }, [site.id]);
+
+  return (
+    <DataSection
+      title="分组列表"
+      description="实时读取自有 sub2api 站点分组"
+      icon={<Users size={17} />}
+      right={
+        <button className="ghostButton" onClick={load} disabled={loading} type="button">
+          <RefreshCw size={16} className={loading ? 'spin' : ''} />
+          刷新
+        </button>
+      }
+    >
+      {error && <div className="inlineNotice error">{error}</div>}
+      {loading && !groups.length ? (
+        <LoadingState label="正在加载分组" />
+      ) : (
+        <JsonTable
+          data={groups.map((group) => ({
+            id: group.id,
+            name: group.name,
+            platform: group.platform,
+            status: group.status
+          }))}
+          emptyText="暂无分组"
+        />
+      )}
+    </DataSection>
+  );
+}
+
+function OwnedSiteAccountsPanel({ site }: { site: OwnedSite }) {
+  const [groups, setGroups] = useState<OwnedSiteGroup[]>([]);
+  const [result, setResult] = useState<PaginatedResult<OwnedSiteAccount> | null>(null);
+  const [filters, setFilters] = useState({
+    search: '',
+    group: '',
+    status: '',
+    page_size: 20,
+    sort_by: 'updated_at',
+    sort_order: 'desc'
+  });
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .ownedSiteGroups(site.id)
+      .then((items) => {
+        if (!cancelled) setGroups(items);
+      })
+      .catch(() => {
+        if (!cancelled) setGroups([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [site.id]);
+
+  function updateFilter(key: keyof typeof filters, value: string | number) {
+    setFilters((current) => ({ ...current, [key]: value }));
+    setPage(1);
+  }
+
+  function loadAccounts() {
+    setLoading(true);
+    setError('');
+    void api
+      .ownedSiteAccounts(site.id, { ...filters, page })
+      .then(setResult)
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    api
+      .ownedSiteAccounts(site.id, { ...filters, page })
+      .then((data) => {
+        if (!cancelled) setResult(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [site.id, filters, page]);
+
+  const totalPages = Math.max(1, result?.pages || 1);
+
+  return (
+    <DataSection
+      title="账号列表"
+      description="支持后端分页、搜索、分组和状态筛选"
+      icon={<KeyRound size={17} />}
+      right={<span className="dataPill">{result ? `${result.total} 个账号` : '实时分页'}</span>}
+    >
+      <div className="filterBar">
+        <label>
+          搜索
+          <div className="inputWithIcon">
+            <Search size={15} />
+            <input value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} placeholder="名称、ID 或关键字" />
+          </div>
+        </label>
+        <label>
+          分组
+          <select value={filters.group} onChange={(event) => updateFilter('group', event.target.value)}>
+            <option value="">全部分组</option>
+            {groups.map((group) => (
+              <option value={group.id} key={group.id}>
+                {groupLabel(group)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          状态
+          <select value={filters.status} onChange={(event) => updateFilter('status', event.target.value)}>
+            <option value="">全部状态</option>
+            {['active', 'error', 'inactive', 'disabled', 'rate_limited', 'temp_unschedulable', 'unschedulable'].map((status) => (
+              <option value={status} key={status}>
+                {accountStatusLabel(status)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          排序
+          <select value={filters.sort_by} onChange={(event) => updateFilter('sort_by', event.target.value)}>
+            <option value="updated_at">更新时间</option>
+            <option value="name">名称</option>
+            <option value="status">状态</option>
+            <option value="platform">平台</option>
+          </select>
+        </label>
+        <label>
+          顺序
+          <select value={filters.sort_order} onChange={(event) => updateFilter('sort_order', event.target.value)}>
+            <option value="desc">倒序</option>
+            <option value="asc">正序</option>
+          </select>
+        </label>
+        <label>
+          每页
+          <select value={filters.page_size} onChange={(event) => updateFilter('page_size', Number(event.target.value))}>
+            {[10, 20, 50, 100].map((size) => (
+              <option value={size} key={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="ghostButton filterRefresh" onClick={loadAccounts} disabled={loading} type="button">
+          <RefreshCw size={16} className={loading ? 'spin' : ''} />
+          刷新
+        </button>
+      </div>
+
+      {error && <div className="inlineNotice error">{error}</div>}
+      {loading && !result ? (
+        <LoadingState label="正在加载账号" />
+      ) : result?.items.length ? (
+        <>
+          <div className="tableWrap ownedAccountTable">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>名称</th>
+                  <th>平台</th>
+                  <th>类型</th>
+                  <th>状态</th>
+                  <th>分组</th>
+                  <th>可调度</th>
+                  <th>错误信息</th>
+                  <th>最近使用</th>
+                  <th>更新时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.items.map((account) => (
+                  <tr key={account.id}>
+                    <td title={account.id}>{account.id}</td>
+                    <td title={account.name}>{account.name || '-'}</td>
+                    <td>{account.platform || '-'}</td>
+                    <td>{account.type || '-'}</td>
+                    <td>
+                      <AccountStatusBadge status={account.status} />
+                    </td>
+                    <td title={accountGroupLabel(account, groups)}>{accountGroupLabel(account, groups)}</td>
+                    <td>{account.schedulable === null ? '-' : account.schedulable ? '可调度' : '不可调度'}</td>
+                    <td title={account.error_message}>{account.error_message || '-'}</td>
+                    <td>{formatShortTime(account.last_used_at, '-')}</td>
+                    <td>{formatShortTime(account.updated_at, '-')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="paginationBar">
+            <span>
+              第 {result.page} / {totalPages} 页
+            </span>
+            <div className="paginationActions">
+              <button className="ghostButton" type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={loading || page <= 1}>
+                上一页
+              </button>
+              <button
+                className="ghostButton"
+                type="button"
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={loading || page >= totalPages}
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <EmptyPanel icon={<KeyRound size={24} />} title="暂无账号" />
+      )}
+    </DataSection>
+  );
+}
+
+function ownedTaskTargetLabel(task: OwnedSiteAutomationTask) {
+  const id = task.target_type === 'account' ? task.target_account_id : task.target_group_id;
+  const name = task.target_type === 'account' ? task.target_account_name : task.target_group_name;
+  if (name && id && name !== id) return `${name}（${id}）`;
+  return name || id || '-';
+}
+
+function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; onAlertsChanged: () => void | Promise<void> }) {
+  const [tasks, setTasks] = useState<OwnedSiteAutomationTask[]>([]);
+  const [groups, setGroups] = useState<OwnedSiteGroup[]>([]);
+  const [targetType, setTargetType] = useState<OwnedSiteTaskTargetType>('account');
+  const [form, setForm] = useState({
+    account_id: '',
+    group_id: '',
+    interval_minutes: 1,
+    cooldown_minutes: 30,
+    recipients: ''
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  function load() {
+    setLoading(true);
+    setError('');
+    void Promise.all([api.ownedSiteTasks(site.id), api.ownedSiteGroups(site.id)])
+      .then(([nextTasks, nextGroups]) => {
+        setTasks(nextTasks);
+        setGroups(nextGroups);
+      })
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load();
+  }, [site.id]);
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    const selectedGroup = groups.find((group) => group.id === form.group_id);
+    try {
+      await api.createOwnedSiteTask(site.id, {
+        target_type: targetType,
+        target_account_id: targetType === 'account' ? form.account_id.trim() : undefined,
+        target_group_id: targetType === 'group' ? form.group_id : undefined,
+        target_group_name: targetType === 'group' ? selectedGroup?.name || form.group_id : undefined,
+        interval_minutes: Number(form.interval_minutes),
+        cooldown_minutes: Number(form.cooldown_minutes),
+        recipients: form.recipients
+      });
+      setForm({ ...form, account_id: '', recipients: '' });
+      setMessage('任务已创建，首次运行只建立账号状态基线');
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function toggle(task: OwnedSiteAutomationTask) {
+    setError('');
+    try {
+      await api.updateOwnedSiteTask(site.id, task.id, { enabled: !task.enabled });
+      load();
+      await onAlertsChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function remove(task: OwnedSiteAutomationTask) {
+    const confirmed = window.confirm(`确定删除自有站点任务「${ownedTaskTargetLabel(task)}」吗？`);
+    if (!confirmed) return;
+    setError('');
+    try {
+      await api.deleteOwnedSiteTask(site.id, task.id);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  return (
+    <div className="panelGrid">
+      <form className="taskForm dataPanel" onSubmit={create}>
+        <SectionHeader title="新建自动化" description="账号状态从非 error 变为 error 时发送邮件告警" icon={<Clock3 size={17} />} />
+        <div className="segmented">
+          <button type="button" className={targetType === 'account' ? 'active' : ''} onClick={() => setTargetType('account')}>
+            指定账号
+          </button>
+          <button type="button" className={targetType === 'group' ? 'active' : ''} onClick={() => setTargetType('group')}>
+            指定分组
+          </button>
+        </div>
+        {targetType === 'account' ? (
+          <label>
+            账号 ID
+            <input required value={form.account_id} onChange={(event) => setForm({ ...form, account_id: event.target.value })} placeholder="例如 123" />
+          </label>
+        ) : (
+          <label>
+            分组
+            <select required value={form.group_id} onChange={(event) => setForm({ ...form, group_id: event.target.value })}>
+              <option value="">选择分组</option>
+              {groups.map((group) => (
+                <option value={group.id} key={group.id}>
+                  {groupLabel(group)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="formGrid">
+          <label>
+            检查间隔
+            <input
+              type="number"
+              min={1}
+              value={form.interval_minutes}
+              onChange={(event) => setForm({ ...form, interval_minutes: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            冷却时间
+            <input
+              type="number"
+              min={0}
+              value={form.cooldown_minutes}
+              onChange={(event) => setForm({ ...form, cooldown_minutes: Number(event.target.value) })}
+            />
+          </label>
+        </div>
+        <p className="fieldHint">首次运行会保存账号状态基线，不会发送告警；只有后续从非 error 变为 error 时才触发。</p>
+        <label>
+          收件人
+          <textarea value={form.recipients} onChange={(event) => setForm({ ...form, recipients: event.target.value })} placeholder="留空使用全局默认收件人" />
+        </label>
+        <button className="primaryButton fullWidth" type="submit">
+          <Plus size={16} />
+          新建任务
+        </button>
+        {message && <div className="successBox">{message}</div>}
+        {error && <div className="errorBox">{error}</div>}
+      </form>
+
+      <DataSection
+        className="taskListPanel"
+        title="任务列表"
+        description={`${site.name} 的账号错误监控规则`}
+        icon={<Bell size={17} />}
+        right={<span className="dataPill">{tasks.length} 个任务</span>}
+      >
+        {loading && !tasks.length ? (
+          <LoadingState label="正在加载任务" />
+        ) : tasks.length ? (
+          <div className="taskList">
+            {tasks.map((task) => (
+              <div className="taskItem" key={task.id}>
+                <div className="taskSummary">
+                  <span className="taskType account_error">账号错误</span>
+                  <strong>{ownedTaskTargetLabel(task)}</strong>
+                  <p>
+                    {ownedTaskTargetCopy[task.target_type]} · 每 {task.interval_minutes} 分钟检查 · 冷却 {task.cooldown_minutes} 分钟
+                  </p>
+                  <small>上次运行 {formatTime(task.last_run_at, '尚未运行')} · 上次告警 {formatTime(task.last_alert_at, '尚未告警')}</small>
+                </div>
+                <div className="taskActions">
+                  <label className="switch" title={task.enabled ? '已启用' : '已停用'}>
+                    <input type="checkbox" checked={task.enabled} onChange={() => toggle(task)} />
+                    <span />
+                  </label>
+                  <button className="iconButton danger" onClick={() => remove(task)} aria-label="删除任务" type="button">
+                    <Trash2 size={17} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyPanel icon={<Clock3 size={24} />} title="暂无自动化任务" />
+        )}
+      </DataSection>
+    </div>
+  );
+}
+
+function OwnedSiteAlertsPanel({ site }: { site: OwnedSite }) {
+  const [alerts, setAlerts] = useState<OwnedSiteAlertEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  function load() {
+    setLoading(true);
+    setError('');
+    void api
+      .ownedSiteAlerts(site.id)
+      .then(setAlerts)
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load();
+  }, [site.id]);
+
+  return (
+    <DataSection
+      title="告警事件"
+      description="账号错误状态变化记录和邮件投递结果"
+      icon={<Bell size={17} />}
+      right={
+        <button className="ghostButton" onClick={load} disabled={loading} type="button">
+          <RefreshCw size={16} className={loading ? 'spin' : ''} />
+          刷新
+        </button>
+      }
+    >
+      {error && <div className="inlineNotice error">{error}</div>}
+      {loading && !alerts.length ? (
+        <LoadingState label="正在加载告警" />
+      ) : alerts.length ? (
+        <div className="tableWrap alertTable">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>目标</th>
+                <th>账号</th>
+                <th>变化</th>
+                <th>内容</th>
+                <th>邮件</th>
+              </tr>
+            </thead>
+            <tbody>
+              {alerts.map((alert) => (
+                <tr key={alert.id}>
+                  <td>{formatTime(alert.created_at)}</td>
+                  <td>{alert.target_type ? ownedTaskTargetCopy[alert.target_type] : '-'}</td>
+                  <td title={alert.account_id || ''}>{alert.account_name || alert.account_id || '-'}</td>
+                  <td>
+                    {alert.before_status || '-'} → {alert.after_status || '-'}
+                  </td>
+                  <td title={alert.message}>{alert.message}</td>
+                  <td>
+                    <span className={`emailState ${alert.email_sent ? 'ok' : alert.email_error ? 'error' : 'pending'}`}>
+                      {alert.email_sent ? '已发送' : alert.email_error || '未发送'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyPanel icon={<Bell size={24} />} title="暂无告警记录" />
+      )}
+    </DataSection>
+  );
+}
+
+function OwnedSiteManagerView({
+  route,
+  onNavigate,
+  onBack,
+  onLogout,
+  onEmailSettings
+}: {
+  route: OwnedSiteRoute;
+  onNavigate: (route: AppRoute, mode?: NavigationMode) => void;
+  onBack: () => void;
+  onLogout: () => void | Promise<void>;
+  onEmailSettings: () => void;
+}) {
+  const [sites, setSites] = useState<OwnedSite[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(route.siteId ?? null);
+  const [query, setQuery] = useState('');
+  const [tab, setTab] = useState<OwnedSiteTabKey>(route.tab);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [siteModal, setSiteModal] = useState<OwnedSite | null | 'new'>(null);
+
+  const selected = sites.find((site) => site.id === selectedId) || null;
+  const filtered = useMemo(
+    () => sites.filter((site) => `${site.name} ${site.base_url}`.toLowerCase().includes(query.toLowerCase())),
+    [sites, query]
+  );
+  const siteStats = useMemo(
+    () => ({
+      active: sites.filter((site) => site.status === 'active').length,
+      syncing: sites.filter((site) => site.status === 'syncing').length,
+      error: sites.filter((site) => site.status === 'error').length
+    }),
+    [sites]
+  );
+
+  async function loadSites(nextSelectedId?: number) {
+    const list = await api.ownedSites();
+    setSites(list);
+    const nextId =
+      nextSelectedId && list.some((site) => site.id === nextSelectedId)
+        ? nextSelectedId
+        : route.siteId && list.some((site) => site.id === route.siteId)
+          ? route.siteId
+        : selectedId && list.some((site) => site.id === selectedId)
+          ? selectedId
+          : list[0]?.id || null;
+    setSelectedId(nextId);
+    if (nextId) {
+      const nextTab = nextSelectedId ? 'overview' : tab;
+      onNavigate({ module: 'owned-sites', siteId: nextId, tab: nextTab }, 'replace');
+    } else {
+      onNavigate({ module: 'owned-sites', tab: 'overview' }, 'replace');
+    }
+  }
+
+  useEffect(() => {
+    setLoading(true);
+    setError('');
+    void loadSites()
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    setSelectedId(route.siteId ?? null);
+    setTab(route.tab);
+  }, [route.siteId, route.tab]);
+
+  useEffect(() => {
+    setMessage('');
+    setError('');
+  }, [selectedId]);
+
+  async function checkSelected() {
+    if (!selected) return;
+    setChecking(true);
+    setMessage('');
+    setError('');
+    try {
+      const checked = await api.checkOwnedSite(selected.id);
+      await loadSites(checked.id);
+      setMessage('连接检查成功');
+    } catch (err) {
+      setError((err as Error).message);
+      await loadSites(selected.id).catch(() => undefined);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function deleteSelected() {
+    if (!selected) return;
+    const confirmed = window.confirm(`确定删除自有站点「${selected.name}」吗？相关任务、快照和告警记录也会被删除。`);
+    if (!confirmed) return;
+    setLoading(true);
+    setError('');
+    try {
+      await api.deleteOwnedSite(selected.id);
+      const list = await api.ownedSites();
+      setSites(list);
+      const nextId = list[0]?.id || null;
+      setSelectedId(nextId);
+      setTab('overview');
+      onNavigate(nextId ? { module: 'owned-sites', siteId: nextId, tab: 'overview' } : { module: 'owned-sites', tab: 'overview' }, 'replace');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const tabs: Array<{ key: OwnedSiteTabKey; label: string; icon: ReactNode }> = [
+    { key: 'overview', label: '概览', icon: <Activity size={16} /> },
+    { key: 'groups', label: '分组', icon: <Users size={16} /> },
+    { key: 'accounts', label: '账号', icon: <KeyRound size={16} /> },
+    { key: 'automation', label: '自动化', icon: <Clock3 size={16} /> },
+    { key: 'alerts', label: '告警', icon: <Bell size={16} /> }
+  ];
+
+  return (
+    <div className="appShell">
+      <aside className="sidebar">
+        <div className="brandRow">
+          <div>
+            <span className="brandKicker">OWNED SITES</span>
+            <h1>自有站点管理</h1>
+            <p>{sites.length} 个自有站点接入</p>
+          </div>
+          <div className="brandActions">
+            <button className="iconButton" onClick={onBack} aria-label="返回首页">
+              <Home size={18} />
+            </button>
+            <button className="iconButton" onClick={onEmailSettings} aria-label="邮件设置">
+              <Settings size={18} />
+            </button>
+            <button className="iconButton" onClick={onLogout} aria-label="退出登录">
+              <LogOut size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="railStats" aria-label="自有站点状态概览">
+          <div>
+            <strong>{siteStats.active}</strong>
+            <span>正常</span>
+          </div>
+          <div>
+            <strong>{siteStats.syncing}</strong>
+            <span>同步中</span>
+          </div>
+          <div>
+            <strong>{siteStats.error}</strong>
+            <span>异常</span>
+          </div>
+        </div>
+
+        <div className="searchBox">
+          <Search size={16} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索站点名称或 URL" />
+        </div>
+        <button className="addButton" onClick={() => setSiteModal('new')}>
+          <Plus size={17} />
+          添加站点
+        </button>
+
+        <div className="channelList">
+          {filtered.map((site) => (
+            <button
+              key={site.id}
+              className={`channelItem ${site.id === selectedId ? 'selected' : ''}`}
+              onClick={() => onNavigate({ module: 'owned-sites', siteId: site.id, tab })}
+            >
+              <span className={`channelRailMark ${site.status}`} />
+              <span className="channelMain">
+                <span className="channelTitleRow">
+                  <strong>{site.name}</strong>
+                  <TypeBadge type={site.type} />
+                </span>
+                <small className="channelUrl">{site.base_url}</small>
+                <span className="channelMeta">
+                  <span>
+                    <Clock3 size={12} />
+                    {formatShortTime(site.last_check_at, '尚未检查')}
+                  </span>
+                  <span>
+                    <KeyRound size={12} />
+                    {siteCredentialLabel(site)}
+                  </span>
+                </span>
+              </span>
+              <StatusBadge status={site.status} />
+            </button>
+          ))}
+          {!filtered.length && <EmptyPanel icon={<Server size={24} />} title={sites.length ? '没有匹配的站点' : '暂无自有站点'} />}
+        </div>
+      </aside>
+
+      <main className="mainArea">
+        {selected ? (
+          <>
+            <header className="topBar">
+              <div className="channelHero">
+                <div className="titleLine">
+                  <h2>{selected.name}</h2>
+                  <TypeBadge type={selected.type} />
+                  <StatusBadge status={selected.status} />
+                </div>
+                <p>{selected.base_url}</p>
+                <div className="heroMeta">
+                  <span>
+                    <Clock3 size={14} />
+                    最近检查 {formatTime(selected.last_check_at, '尚未检查')}
+                  </span>
+                  <span>
+                    <KeyRound size={14} />
+                    {siteCredentialLabel(selected)}
+                  </span>
+                </div>
+              </div>
+              <div className="toolbar">
+                <button className="ghostButton" onClick={() => setSiteModal(selected)}>
+                  <Pencil size={16} />
+                  编辑
+                </button>
+                <button className="ghostButton" onClick={checkSelected} disabled={checking}>
+                  <RefreshCw size={16} className={checking ? 'spin' : ''} />
+                  检查
+                </button>
+                <button className="ghostButton dangerText" onClick={deleteSelected} disabled={loading}>
+                  <Trash2 size={16} />
+                  删除
+                </button>
+              </div>
+            </header>
+
+            {message && <div className="successBox">{message}</div>}
+            {error && (
+              <div className="errorBox">
+                <AlertTriangle size={17} />
+                {error}
+              </div>
+            )}
+            {selected.last_error && (
+              <div className="warnBox">
+                <AlertTriangle size={17} />
+                <span>最近检查发现异常：{selected.last_error}</span>
+              </div>
+            )}
+
+            <nav className="tabs">
+              {tabs.map((item) => (
+                <button
+                  key={item.key}
+                  className={tab === item.key ? 'active' : ''}
+                  onClick={() => {
+                    if (selectedId) onNavigate({ module: 'owned-sites', siteId: selectedId, tab: item.key });
+                    else onNavigate({ module: 'owned-sites', tab: item.key });
+                  }}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+
+            <section className="content">
+              {tab === 'overview' && <OwnedSiteOverview site={selected} onSiteChanged={(site) => loadSites(site.id)} />}
+              {tab === 'groups' && <OwnedSiteGroupsPanel site={selected} />}
+              {tab === 'accounts' && <OwnedSiteAccountsPanel site={selected} />}
+              {tab === 'automation' && (
+                <OwnedSiteAutomationPanel
+                  site={selected}
+                  onAlertsChanged={() => {
+                    if (selectedId) return api.ownedSiteAlerts(selectedId);
+                    return undefined;
+                  }}
+                />
+              )}
+              {tab === 'alerts' && <OwnedSiteAlertsPanel site={selected} />}
+            </section>
+          </>
+        ) : (
+          <div className="blank">
+            <Server size={42} />
+            <h2>暂无自有站点</h2>
+            <p>添加第一个 sub2api 自有站点后，可以查看站点分组、账号分页列表，并配置账号错误状态告警。</p>
+            <button className="primaryButton" onClick={() => setSiteModal('new')}>
+              <Plus size={16} />
+              添加站点
+            </button>
+          </div>
+        )}
+      </main>
+
+      {siteModal && (
+        <OwnedSiteModal
+          site={siteModal === 'new' ? null : siteModal}
+          onClose={() => setSiteModal(null)}
+          onSaved={(site) => loadSites(site.id)}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>('checking');
+  const [route, setRoute] = useState<AppRoute>(() => readCurrentRoute());
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(route.module === 'channels' ? route.channelId ?? null : null);
   const [query, setQuery] = useState('');
-  const [tab, setTab] = useState<TabKey>('overview');
+  const [tab, setTab] = useState<TabKey>(route.module === 'channels' ? route.tab : 'overview');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1686,14 +2862,38 @@ export default function App() {
     [channels]
   );
 
+  const navigate = useCallback((nextRoute: AppRoute, mode: NavigationMode = 'push') => {
+    const normalized = normalizeRoute(nextRoute);
+    const nextPath = buildAppPath(normalized);
+    if (typeof window !== 'undefined') {
+      const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (currentPath !== nextPath) {
+        if (mode === 'replace') window.history.replaceState(null, '', nextPath);
+        else window.history.pushState(null, '', nextPath);
+      }
+    }
+    setRoute(normalized);
+  }, []);
+
   async function loadChannels(nextSelectedId?: number) {
     const list = await api.channels();
     setChannels(list);
-    setSelectedId((current) => {
-      if (nextSelectedId && list.some((channel) => channel.id === nextSelectedId)) return nextSelectedId;
-      if (current && list.some((channel) => channel.id === current)) return current;
-      return list[0]?.id || null;
-    });
+    const desiredId = route.module === 'channels' ? route.channelId : undefined;
+    const nextId =
+      nextSelectedId && list.some((channel) => channel.id === nextSelectedId)
+        ? nextSelectedId
+        : desiredId && list.some((channel) => channel.id === desiredId)
+          ? desiredId
+          : selectedId && list.some((channel) => channel.id === selectedId)
+            ? selectedId
+            : list[0]?.id || null;
+    setSelectedId(nextId);
+    if (route.module === 'channels') {
+      const nextTab = nextSelectedId ? 'overview' : route.tab;
+      navigate(nextId ? { module: 'channels', channelId: nextId, tab: nextTab } : { module: 'channels', tab: 'overview' }, 'replace');
+    } else if (nextSelectedId) {
+      navigate({ module: 'channels', channelId: nextSelectedId, tab: 'overview' });
+    }
   }
 
   useEffect(() => {
@@ -1704,6 +2904,8 @@ export default function App() {
       setOverview(null);
       setAlerts([]);
     });
+    const handlePopState = () => setRoute(readCurrentRoute());
+    window.addEventListener('popstate', handlePopState);
     api
       .authStatus()
       .then((status) => {
@@ -1718,8 +2920,25 @@ export default function App() {
         setAuthState('anonymous');
         setError((err as Error).message);
       });
-    return () => setUnauthorizedHandler(null);
+    return () => {
+      setUnauthorizedHandler(null);
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
+
+  useEffect(() => {
+    if (route.module !== 'channels') return;
+    setSelectedId(route.channelId ?? null);
+    setTab(route.tab);
+  }, [route]);
+
+  useEffect(() => {
+    if (authState !== 'authenticated' || route.module !== 'channels') return;
+    if (route.channelId && channels.some((channel) => channel.id === route.channelId)) return;
+    const nextId = channels[0]?.id || null;
+    setSelectedId(nextId);
+    navigate(nextId ? { module: 'channels', channelId: nextId, tab: route.tab } : { module: 'channels', tab: 'overview' }, 'replace');
+  }, [authState, channels, navigate, route]);
 
   useEffect(() => {
     if (authState !== 'authenticated') return;
@@ -1778,6 +2997,7 @@ export default function App() {
   async function logout() {
     await api.logout().catch(() => undefined);
     setAuthState('anonymous');
+    navigate({ module: 'home' }, 'replace');
     setChannels([]);
     setSelectedId(null);
     setOverview(null);
@@ -1816,7 +3036,10 @@ export default function App() {
       await api.deleteChannel(selected.id);
       const list = await api.channels();
       setChannels(list);
-      setSelectedId(list[0]?.id || null);
+      const nextId = list[0]?.id || null;
+      setSelectedId(nextId);
+      setTab('overview');
+      navigate(nextId ? { module: 'channels', channelId: nextId, tab: 'overview' } : { module: 'channels', tab: 'overview' }, 'replace');
       setOverview(null);
       setAlerts([]);
     } catch (err) {
@@ -1842,6 +3065,34 @@ export default function App() {
 
   if (authState === 'anonymous') return <LoginScreen onAuthenticated={afterLogin} />;
 
+  if (route.module === 'home') {
+    return (
+      <>
+        <HomeSwitcher
+          onSelect={(module) => navigate(module === 'channels' ? { module: 'channels', tab: 'overview' } : { module: 'owned-sites', tab: 'overview' })}
+          onLogout={logout}
+          onEmailSettings={() => setEmailOpen(true)}
+        />
+        {emailOpen && <EmailModal onClose={() => setEmailOpen(false)} />}
+      </>
+    );
+  }
+
+  if (route.module === 'owned-sites') {
+    return (
+      <>
+        <OwnedSiteManagerView
+          route={route}
+          onNavigate={navigate}
+          onBack={() => navigate({ module: 'home' })}
+          onLogout={logout}
+          onEmailSettings={() => setEmailOpen(true)}
+        />
+        {emailOpen && <EmailModal onClose={() => setEmailOpen(false)} />}
+      </>
+    );
+  }
+
   return (
     <div className="appShell">
       <aside className="sidebar">
@@ -1852,6 +3103,9 @@ export default function App() {
             <p>{channels.length} 个渠道接入</p>
           </div>
           <div className="brandActions">
+            <button className="iconButton" onClick={() => navigate({ module: 'home' })} aria-label="返回首页">
+              <ArrowLeft size={18} />
+            </button>
             <button className="iconButton" onClick={() => setEmailOpen(true)} aria-label="邮件设置">
               <Settings size={18} />
             </button>
@@ -1887,7 +3141,11 @@ export default function App() {
 
         <div className="channelList">
           {filtered.map((channel) => (
-            <button key={channel.id} className={`channelItem ${channel.id === selectedId ? 'selected' : ''}`} onClick={() => setSelectedId(channel.id)}>
+            <button
+              key={channel.id}
+              className={`channelItem ${channel.id === selectedId ? 'selected' : ''}`}
+              onClick={() => navigate({ module: 'channels', channelId: channel.id, tab })}
+            >
               <span className={`channelRailMark ${channel.status}`} />
               <span className="channelMain">
                 <span className="channelTitleRow">
@@ -1973,7 +3231,14 @@ export default function App() {
 
             <nav className="tabs">
               {tabs.map((item) => (
-                <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => setTab(item.key)}>
+                <button
+                  key={item.key}
+                  className={tab === item.key ? 'active' : ''}
+                  onClick={() => {
+                    if (selectedId) navigate({ module: 'channels', channelId: selectedId, tab: item.key });
+                    else navigate({ module: 'channels', tab: item.key });
+                  }}
+                >
                   {item.icon}
                   {item.label}
                 </button>

@@ -2,6 +2,10 @@ export type ChannelType = 'sub2api' | 'newapi';
 export type ChannelStatus = 'active' | 'error' | 'syncing';
 export type CacheKey = 'profile' | 'groups' | 'tokens' | 'subscriptions';
 export type AutomationTaskType = 'low_balance' | 'burn_rate' | 'group_added' | 'group_removed' | 'group_ratio_changed';
+export type OwnedSiteType = 'sub2api';
+export type OwnedSiteStatus = 'active' | 'error' | 'syncing';
+export type OwnedSiteTaskType = 'account_error';
+export type OwnedSiteTaskTargetType = 'account' | 'group';
 
 export interface ChannelRecord {
   id: number;
@@ -83,6 +87,75 @@ export interface AutomationTaskRecord {
 export interface AutomationTask extends Omit<AutomationTaskRecord, 'enabled' | 'recipients_json'> {
   enabled: boolean;
   recipients: string[];
+}
+
+export interface OwnedSiteRecord {
+  id: number;
+  name: string;
+  type: OwnedSiteType;
+  base_url: string;
+  admin_api_key: string | null;
+  status: OwnedSiteStatus;
+  last_check_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SafeOwnedSite {
+  id: number;
+  name: string;
+  type: OwnedSiteType;
+  base_url: string;
+  status: OwnedSiteStatus;
+  last_check_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  has_admin_api_key: boolean;
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface OwnedSiteAutomationTaskRecord {
+  id: number;
+  site_id: number;
+  type: OwnedSiteTaskType;
+  enabled: number;
+  target_type: OwnedSiteTaskTargetType;
+  target_account_id: string | null;
+  target_account_name: string | null;
+  target_group_id: string | null;
+  target_group_name: string | null;
+  interval_minutes: number;
+  cooldown_minutes: number;
+  recipients_json: string | null;
+  last_run_at: string | null;
+  last_alert_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OwnedSiteAutomationTask extends Omit<OwnedSiteAutomationTaskRecord, 'enabled' | 'recipients_json'> {
+  enabled: boolean;
+  recipients: string[];
+}
+
+export interface OwnedSiteAccountStateRecord {
+  site_id: number;
+  account_id: string;
+  account_name: string | null;
+  status: string | null;
+  error_message: string | null;
+  group_ids_json: string | null;
+  raw_json: string | null;
+  checked_at: string;
 }
 
 export interface EmailSettings {

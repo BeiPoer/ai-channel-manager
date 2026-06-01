@@ -2,7 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import type { AutomationTask, AutomationTaskRecord, ChannelRecord, SafeChannel } from './types.js';
+import type {
+  AutomationTask,
+  AutomationTaskRecord,
+  ChannelRecord,
+  OwnedSiteAutomationTask,
+  OwnedSiteAutomationTaskRecord,
+  OwnedSiteRecord,
+  SafeChannel,
+  SafeOwnedSite
+} from './types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = process.cwd();
@@ -103,6 +112,69 @@ export function migrate(db: DatabaseSync): void {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS owned_sites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'sub2api' CHECK (type IN ('sub2api')),
+      base_url TEXT NOT NULL,
+      admin_api_key TEXT,
+      status TEXT NOT NULL DEFAULT 'syncing' CHECK (status IN ('active', 'error', 'syncing')),
+      last_check_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS owned_site_account_state (
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL,
+      account_name TEXT,
+      status TEXT,
+      error_message TEXT,
+      group_ids_json TEXT,
+      raw_json TEXT,
+      checked_at TEXT NOT NULL,
+      PRIMARY KEY (site_id, account_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS owned_site_automation_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      type TEXT NOT NULL DEFAULT 'account_error' CHECK (type IN ('account_error')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      target_type TEXT NOT NULL CHECK (target_type IN ('account', 'group')),
+      target_account_id TEXT,
+      target_account_name TEXT,
+      target_group_id TEXT,
+      target_group_name TEXT,
+      interval_minutes INTEGER NOT NULL DEFAULT 30,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+      recipients_json TEXT,
+      last_run_at TEXT,
+      last_alert_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS owned_site_alert_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      task_id INTEGER REFERENCES owned_site_automation_tasks(id) ON DELETE SET NULL,
+      type TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      account_id TEXT,
+      account_name TEXT,
+      site_name TEXT NOT NULL,
+      message TEXT NOT NULL,
+      before_status TEXT,
+      after_status TEXT,
+      snapshot_json TEXT,
+      email_sent INTEGER NOT NULL DEFAULT 0,
+      email_error TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
   migrateAutomationTaskTypes(db);
   seedExistingGroupTaskState(db);
@@ -178,7 +250,34 @@ export function sanitizeChannel(channel: ChannelRecord): SafeChannel {
   };
 }
 
+export function getOwnedSite(db: DatabaseSync, id: number): OwnedSiteRecord | null {
+  return (db.prepare('SELECT * FROM owned_sites WHERE id = ?').get(id) as OwnedSiteRecord | undefined) || null;
+}
+
+export function sanitizeOwnedSite(site: OwnedSiteRecord): SafeOwnedSite {
+  return {
+    id: site.id,
+    name: site.name,
+    type: site.type,
+    base_url: site.base_url,
+    status: site.status,
+    last_check_at: site.last_check_at,
+    last_error: site.last_error,
+    created_at: site.created_at,
+    updated_at: site.updated_at,
+    has_admin_api_key: Boolean(site.admin_api_key)
+  };
+}
+
 export function parseTask(row: AutomationTaskRecord): AutomationTask {
+  return {
+    ...row,
+    enabled: Boolean(row.enabled),
+    recipients: parseJson<string[]>(row.recipients_json, [])
+  };
+}
+
+export function parseOwnedSiteTask(row: OwnedSiteAutomationTaskRecord): OwnedSiteAutomationTask {
   return {
     ...row,
     enabled: Boolean(row.enabled),

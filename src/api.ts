@@ -1,4 +1,17 @@
-import type { AlertEvent, AutomationTask, Channel, EmailSettings, Overview, TokenModelsResult } from './types';
+import type {
+  AlertEvent,
+  AutomationTask,
+  Channel,
+  EmailSettings,
+  Overview,
+  OwnedSite,
+  OwnedSiteAccount,
+  OwnedSiteAlertEvent,
+  OwnedSiteAutomationTask,
+  OwnedSiteGroup,
+  PaginatedResult,
+  TokenModelsResult
+} from './types';
 
 type UnauthorizedHandler = () => void;
 
@@ -25,6 +38,17 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(data?.error || `请求失败：HTTP ${response.status}`);
   }
   return data as T;
+}
+
+function queryString(params?: Record<string, string | number | boolean | null | undefined>) {
+  if (!params) return '';
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === '') continue;
+    search.set(key, String(value));
+  }
+  const value = search.toString();
+  return value ? `?${value}` : '';
 }
 
 export const api = {
@@ -58,6 +82,25 @@ export const api = {
   deleteTask: (channelId: number, taskId: number) =>
     request<void>(`/api/channels/${channelId}/tasks/${taskId}`, { method: 'DELETE' }),
   alerts: (channelId?: number) => request<AlertEvent[]>(`/api/alerts${channelId ? `?channel_id=${channelId}` : ''}`),
+  ownedSites: () => request<OwnedSite[]>('/api/owned-sites'),
+  createOwnedSite: (payload: Record<string, unknown>) =>
+    request<OwnedSite>('/api/owned-sites', { method: 'POST', body: JSON.stringify(payload) }),
+  updateOwnedSite: (id: number, payload: Record<string, unknown>) =>
+    request<OwnedSite>(`/api/owned-sites/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteOwnedSite: (id: number) => request<void>(`/api/owned-sites/${id}`, { method: 'DELETE' }),
+  checkOwnedSite: (id: number) => request<OwnedSite>(`/api/owned-sites/${id}/check`, { method: 'POST' }),
+  ownedSiteGroups: (id: number) => request<OwnedSiteGroup[]>(`/api/owned-sites/${id}/groups`),
+  ownedSiteAccounts: (id: number, params?: Record<string, string | number | boolean | null | undefined>) =>
+    request<PaginatedResult<OwnedSiteAccount>>(`/api/owned-sites/${id}/accounts${queryString(params)}`),
+  ownedSiteTasks: (id: number) => request<OwnedSiteAutomationTask[]>(`/api/owned-sites/${id}/tasks`),
+  createOwnedSiteTask: (id: number, payload: Record<string, unknown>) =>
+    request<OwnedSiteAutomationTask>(`/api/owned-sites/${id}/tasks`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateOwnedSiteTask: (siteId: number, taskId: number, payload: Record<string, unknown>) =>
+    request<OwnedSiteAutomationTask>(`/api/owned-sites/${siteId}/tasks/${taskId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteOwnedSiteTask: (siteId: number, taskId: number) =>
+    request<void>(`/api/owned-sites/${siteId}/tasks/${taskId}`, { method: 'DELETE' }),
+  ownedSiteAlerts: (id: number) => request<OwnedSiteAlertEvent[]>(`/api/owned-sites/${id}/alerts`),
+  allOwnedSiteAlerts: () => request<OwnedSiteAlertEvent[]>('/api/owned-site-alerts'),
   emailSettings: () => request<EmailSettings>('/api/settings/email'),
   saveEmailSettings: (payload: EmailSettings) =>
     request<EmailSettings>('/api/settings/email', { method: 'PUT', body: JSON.stringify(payload) }),

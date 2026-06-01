@@ -5,10 +5,29 @@ import { DatabaseSync } from 'node:sqlite';
 import { createUpstreamLoginUrl, getTokenModels, normalizeBaseUrl, syncChannel, updateTokenGroup } from './adapters.js';
 import { clearSessionCookie, isAuthenticated, requireAuth, setSessionCookie, verifyAccessPassword } from './auth.js';
 import type { AppConfig } from './config.js';
-import { getChannel, getSetting, nowIso, parseTask, readChannelCache, sanitizeChannel, splitRecipients, upsertTaskState } from './db.js';
+import {
+  getChannel,
+  getOwnedSite,
+  getSetting,
+  nowIso,
+  parseOwnedSiteTask,
+  parseTask,
+  readChannelCache,
+  sanitizeChannel,
+  sanitizeOwnedSite,
+  splitRecipients,
+  upsertTaskState
+} from './db.js';
 import { getEmailSettings, saveEmailSettings, sendEmail } from './email.js';
 import { UpstreamError } from './http.js';
-import type { AutomationTaskRecord, AutomationTaskType, ChannelRecord, ChannelType } from './types.js';
+import {
+  checkOwnedSite,
+  fetchOwnedSiteAccounts,
+  fetchOwnedSiteGroups,
+  normalizeOwnedSiteBaseUrl,
+  normalizeOwnedSiteTaskPayload
+} from './ownedSites.js';
+import type { AutomationTaskRecord, AutomationTaskType, ChannelRecord, ChannelType, OwnedSiteAutomationTaskRecord, OwnedSiteRecord, OwnedSiteType } from './types.js';
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void> | void;
 
@@ -28,6 +47,12 @@ function ensureChannel(db: DatabaseSync, id: number): ChannelRecord {
   const channel = getChannel(db, id);
   if (!channel) throw new UpstreamError('渠道不存在', 404);
   return channel;
+}
+
+function ensureOwnedSite(db: DatabaseSync, id: number): OwnedSiteRecord {
+  const site = getOwnedSite(db, id);
+  if (!site) throw new UpstreamError('自有站点不存在', 404);
+  return site;
 }
 
 function listCache(db: DatabaseSync, channelId: number, key: string, fallback: unknown) {
@@ -91,6 +116,28 @@ function normalizeChannelInput(body: Record<string, unknown>, existing?: Channel
         ? String(body.newapi_access_token)
         : existing?.newapi_access_token || null,
     newapi_user_id: body.newapi_user_id !== undefined ? String(body.newapi_user_id || '').trim() || null : existing?.newapi_user_id || null
+  };
+}
+
+function normalizeOwnedSiteInput(body: Record<string, unknown>, existing?: OwnedSiteRecord) {
+  const type = (body.type || existing?.type || 'sub2api') as OwnedSiteType;
+  if (type !== 'sub2api') throw new UpstreamError('自有站点类型无效，当前仅支持 sub2api', 400);
+  const baseUrl = body.base_url !== undefined ? normalizeOwnedSiteBaseUrl(String(body.base_url)) : existing?.base_url;
+  if (!baseUrl) throw new UpstreamError('站点链接不能为空', 400);
+  let host = 'sub2api';
+  try {
+    host = new URL(baseUrl).host;
+  } catch {
+    throw new UpstreamError('站点链接格式无效', 400);
+  }
+  return {
+    name: String(body.name || existing?.name || '').trim() || `sub2api ${host}`,
+    type,
+    base_url: baseUrl,
+    admin_api_key:
+      body.admin_api_key !== undefined && String(body.admin_api_key).trim() !== ''
+        ? String(body.admin_api_key).trim()
+        : existing?.admin_api_key || null
   };
 }
 
@@ -339,6 +386,173 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
           ORDER BY a.created_at DESC
           LIMIT 200
         `).all();
+    res.json(rows);
+  });
+
+  app.get('/api/owned-sites', (_req, res) => {
+    const rows = db.prepare('SELECT * FROM owned_sites ORDER BY updated_at DESC, id DESC').all() as unknown as OwnedSiteRecord[];
+    res.json(rows.map(sanitizeOwnedSite));
+  });
+
+  app.post('/api/owned-sites', asyncRoute(async (req, res) => {
+    const input = normalizeOwnedSiteInput(req.body || {});
+    if (!input.admin_api_key) throw new UpstreamError('自有站点需要 Admin API Key', 400);
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO owned_sites (name, type, base_url, admin_api_key, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'syncing', ?, ?)
+    `).run(input.name, input.type, input.base_url, input.admin_api_key, now, now);
+    const id = Number(result.lastInsertRowid);
+    try {
+      const site = await checkOwnedSite(db, id);
+      res.status(201).json(site);
+    } catch (error) {
+      db.prepare('DELETE FROM owned_sites WHERE id = ?').run(id);
+      throw error;
+    }
+  }));
+
+  app.put('/api/owned-sites/:id', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const existing = ensureOwnedSite(db, id);
+    const input = normalizeOwnedSiteInput(req.body || {}, existing);
+    db.prepare(`
+      UPDATE owned_sites
+      SET name = ?, base_url = ?, admin_api_key = ?, updated_at = ?
+      WHERE id = ?
+    `).run(input.name, input.base_url, input.admin_api_key, nowIso(), id);
+    if (req.body?.check === true) {
+      res.json(await checkOwnedSite(db, id));
+      return;
+    }
+    res.json(sanitizeOwnedSite(ensureOwnedSite(db, id)));
+  }));
+
+  app.delete('/api/owned-sites/:id', (req, res) => {
+    const id = idParam(req);
+    ensureOwnedSite(db, id);
+    db.prepare('DELETE FROM owned_sites WHERE id = ?').run(id);
+    res.status(204).end();
+  });
+
+  app.post('/api/owned-sites/:id/check', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    res.json(await checkOwnedSite(db, id));
+  }));
+
+  app.get('/api/owned-sites/:id/groups', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await fetchOwnedSiteGroups(site));
+  }));
+
+  app.get('/api/owned-sites/:id/accounts', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await fetchOwnedSiteAccounts(site, req.query as Record<string, unknown>));
+  }));
+
+  app.get('/api/owned-sites/:id/tasks', (req, res) => {
+    const id = idParam(req);
+    ensureOwnedSite(db, id);
+    const rows = db.prepare('SELECT * FROM owned_site_automation_tasks WHERE site_id = ? ORDER BY id DESC').all(id) as unknown as OwnedSiteAutomationTaskRecord[];
+    res.json(rows.map(parseOwnedSiteTask));
+  });
+
+  app.post('/api/owned-sites/:id/tasks', (req, res) => {
+    const id = idParam(req);
+    ensureOwnedSite(db, id);
+    const payload = normalizeOwnedSiteTaskPayload(req.body || {});
+    const targetType = payload.target_type;
+    if (!targetType) throw new UpstreamError('任务目标类型无效', 400);
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO owned_site_automation_tasks (
+        site_id, type, enabled, target_type, target_account_id, target_account_name, target_group_id, target_group_name,
+        interval_minutes, cooldown_minutes, recipients_json, created_at, updated_at
+      ) VALUES (?, 'account_error', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      payload.enabled ?? 1,
+      targetType,
+      payload.target_account_id ?? null,
+      payload.target_account_name ?? null,
+      payload.target_group_id ?? null,
+      payload.target_group_name ?? null,
+      payload.interval_minutes ?? 1,
+      payload.cooldown_minutes ?? 30,
+      payload.recipients_json ?? JSON.stringify([]),
+      now,
+      now
+    );
+    const row = db.prepare('SELECT * FROM owned_site_automation_tasks WHERE id = ?').get(Number(result.lastInsertRowid)) as unknown as OwnedSiteAutomationTaskRecord;
+    res.status(201).json(parseOwnedSiteTask(row));
+  });
+
+  app.put('/api/owned-sites/:id/tasks/:taskId', (req, res) => {
+    const id = idParam(req);
+    ensureOwnedSite(db, id);
+    const taskId = Number(req.params.taskId);
+    const existing = db.prepare('SELECT * FROM owned_site_automation_tasks WHERE id = ? AND site_id = ?').get(taskId, id) as
+      | OwnedSiteAutomationTaskRecord
+      | undefined;
+    if (!existing) throw new UpstreamError('任务不存在', 404);
+    const payload = normalizeOwnedSiteTaskPayload(req.body || {}, true);
+    const nextTargetType = payload.target_type ?? existing.target_type;
+    const nextAccountId = payload.target_account_id !== undefined ? payload.target_account_id : existing.target_account_id;
+    const nextGroupId = payload.target_group_id !== undefined ? payload.target_group_id : existing.target_group_id;
+    if (nextTargetType === 'account' && !nextAccountId) throw new UpstreamError('请选择要监控的账号', 400);
+    if (nextTargetType === 'group' && !nextGroupId) throw new UpstreamError('请选择要监控的分组', 400);
+    db.prepare(`
+      UPDATE owned_site_automation_tasks
+      SET enabled = ?, target_type = ?, target_account_id = ?, target_account_name = ?, target_group_id = ?, target_group_name = ?,
+          interval_minutes = ?, cooldown_minutes = ?, recipients_json = ?, updated_at = ?
+      WHERE id = ? AND site_id = ?
+    `).run(
+      payload.enabled ?? existing.enabled,
+      nextTargetType,
+      nextTargetType === 'account' ? nextAccountId : null,
+      nextTargetType === 'account' ? (payload.target_account_name !== undefined ? payload.target_account_name : existing.target_account_name) : null,
+      nextTargetType === 'group' ? nextGroupId : null,
+      nextTargetType === 'group' ? (payload.target_group_name !== undefined ? payload.target_group_name : existing.target_group_name) : null,
+      payload.interval_minutes ?? existing.interval_minutes,
+      payload.cooldown_minutes ?? existing.cooldown_minutes,
+      payload.recipients_json ?? existing.recipients_json,
+      nowIso(),
+      taskId,
+      id
+    );
+    const row = db.prepare('SELECT * FROM owned_site_automation_tasks WHERE id = ?').get(taskId) as unknown as OwnedSiteAutomationTaskRecord;
+    res.json(parseOwnedSiteTask(row));
+  });
+
+  app.delete('/api/owned-sites/:id/tasks/:taskId', (req, res) => {
+    const id = idParam(req);
+    ensureOwnedSite(db, id);
+    db.prepare('DELETE FROM owned_site_automation_tasks WHERE id = ? AND site_id = ?').run(Number(req.params.taskId), id);
+    res.status(204).end();
+  });
+
+  app.get('/api/owned-sites/:id/alerts', (req, res) => {
+    const id = idParam(req);
+    ensureOwnedSite(db, id);
+    const rows = db.prepare(`
+      SELECT *
+      FROM owned_site_alert_events
+      WHERE site_id = ?
+      ORDER BY created_at DESC
+      LIMIT 200
+    `).all(id);
+    res.json(rows);
+  });
+
+  app.get('/api/owned-site-alerts', (_req, res) => {
+    const rows = db.prepare(`
+      SELECT *
+      FROM owned_site_alert_events
+      ORDER BY created_at DESC
+      LIMIT 200
+    `).all();
     res.json(rows);
   });
 
