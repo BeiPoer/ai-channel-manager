@@ -290,6 +290,49 @@ describe('local API', () => {
     db.close();
   });
 
+  it('seeds group ratio task baseline from token-used groups only', async () => {
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const now = new Date().toISOString();
+    const channelId = Number(
+      db.prepare(`
+        INSERT INTO channels (
+          name, type, base_url, username, password, status, created_at, updated_at
+        ) VALUES ('s', 'sub2api', 'https://sub2api.example.com', 'u', 'p', 'active', ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (?, 'groups', ?, ?, ?)
+    `).run(
+      channelId,
+      JSON.stringify([
+        { id: 1, name: 'default', rate_multiplier: 1 },
+        { id: 2, name: 'vip', rate_multiplier: 2 }
+      ]),
+      JSON.stringify([
+        { id: 1, name: 'default', rate_multiplier: 1 },
+        { id: 2, name: 'vip', rate_multiplier: 2 }
+      ]),
+      now
+    );
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (?, 'tokens', ?, ?, ?)
+    `).run(channelId, JSON.stringify([{ id: 9, group_id: 2 }]), JSON.stringify([{ id: 9, group_id: 2 }]), now);
+
+    const response = await agent.post(`/api/channels/${channelId}/tasks`).send({ type: 'group_ratio_changed' }).expect(201);
+
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(response.body.id) as
+      | { value_json: string }
+      | undefined;
+    expect(state).toBeTruthy();
+    expect(JSON.parse(state?.value_json || '[]')).toEqual([{ id: 2, name: 'vip', rate_multiplier: 2 }]);
+    db.close();
+  });
+
   it('does not reset group task baseline when updating unrelated task fields', async () => {
     const db = createDatabase(':memory:');
     const app = createApp(db, testConfig);

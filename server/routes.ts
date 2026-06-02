@@ -27,6 +27,7 @@ import {
   normalizeOwnedSiteBaseUrl,
   normalizeOwnedSiteTaskPayload
 } from './ownedSites.js';
+import { filterGroupsByTokenUsage } from './groupMonitoring.js';
 import type { AutomationTaskRecord, AutomationTaskType, ChannelRecord, ChannelType, OwnedSiteAutomationTaskRecord, OwnedSiteRecord, OwnedSiteType } from './types.js';
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void> | void;
@@ -77,9 +78,16 @@ function isGroupTaskType(value: unknown): boolean {
   return value === 'group_added' || value === 'group_removed' || value === 'group_ratio_changed';
 }
 
-function seedGroupTaskState(db: DatabaseSync, taskId: number, channelId: number): void {
+function seedGroupTaskState(db: DatabaseSync, taskId: number, channelId: number, taskType: AutomationTaskType): void {
   const groups = readChannelCache(db, channelId, 'groups', []);
-  if (groups.exists) upsertTaskState(db, taskId, groupTaskStateKey, groups.value);
+  if (!groups.exists) return;
+  if (taskType !== 'group_ratio_changed') {
+    upsertTaskState(db, taskId, groupTaskStateKey, groups.value);
+    return;
+  }
+  const channel = getChannel(db, channelId);
+  const tokens = readChannelCache(db, channelId, 'tokens', []);
+  upsertTaskState(db, taskId, groupTaskStateKey, channel ? filterGroupsByTokenUsage(groups.value, tokens.value, channel.type) : groups.value);
 }
 
 function taskPayload(body: Record<string, unknown>, partial = false) {
@@ -324,7 +332,7 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     );
     const row = db.prepare('SELECT * FROM automation_tasks WHERE id = ?').get(Number(result.lastInsertRowid)) as unknown as AutomationTaskRecord;
     if (isGroupTaskType(row.type)) {
-      seedGroupTaskState(db, row.id, id);
+      seedGroupTaskState(db, row.id, id, row.type);
     }
     res.status(201).json(parseTask(row));
   });
@@ -356,7 +364,7 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const changedToGroupTask = payload.type !== undefined && isGroupTaskType(row.type) && !isGroupTaskType(existing.type);
     const reenabledGroupTask = isGroupTaskType(row.type) && existing.enabled === 0 && payload.enabled === 1;
     if (changedToGroupTask || reenabledGroupTask) {
-      seedGroupTaskState(db, row.id, id);
+      seedGroupTaskState(db, row.id, id, row.type);
     }
     res.json(parseTask(row));
   });

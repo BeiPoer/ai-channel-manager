@@ -182,6 +182,10 @@ describe('automation evaluation', () => {
       VALUES (1, 'groups', ?, ?, ?)
     `).run(JSON.stringify([{ name: 'default', ratio: 1 }]), JSON.stringify([{ name: 'default', ratio: 1 }]), now);
     db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (1, 'tokens', ?, ?, ?)
+    `).run(JSON.stringify([{ id: 9, group: { name: 'default' } }]), JSON.stringify([{ id: 9, group: { name: 'default' } }]), now);
+    db.prepare(`
       INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
       VALUES
         (1, 'group_added', 1, 1, 0, 60, 0, ?, ?),
@@ -204,6 +208,11 @@ describe('automation evaluation', () => {
         ]),
         nowIso()
       );
+      db.prepare(`
+        UPDATE channel_cache
+        SET raw_json = ?, normalized_json = ?, synced_at = ?
+        WHERE channel_id = 1 AND cache_key = 'tokens'
+      `).run(JSON.stringify([{ id: 9, group: { name: 'default' } }]), JSON.stringify([{ id: 9, group: { name: 'default' } }]), nowIso());
       return {
         profile: {},
         balanceSnapshot: { balance: 1, unit: 'quota', raw: {} },
@@ -211,7 +220,7 @@ describe('automation evaluation', () => {
           { name: 'default', ratio: 2 },
           { name: 'vip', ratio: 0.8 }
         ],
-        tokens: [],
+        tokens: [{ id: 9, group: { name: 'default' } }],
         raw: {}
       };
     });
@@ -294,6 +303,10 @@ describe('automation evaluation', () => {
       JSON.stringify([{ name: 'default', rate_multiplier: 1 }]),
       now
     );
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (1, 'tokens', ?, ?, ?)
+    `).run(JSON.stringify([{ id: 9, group: { name: 'default' } }]), JSON.stringify([{ id: 9, group: { name: 'default' } }]), now);
     const taskId = Number(
       db.prepare(`
         INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
@@ -311,11 +324,16 @@ describe('automation evaluation', () => {
         JSON.stringify([{ name: 'default', rate_multiplier: 2 }]),
         nowIso()
       );
+      db.prepare(`
+        UPDATE channel_cache
+        SET raw_json = ?, normalized_json = ?, synced_at = ?
+        WHERE channel_id = 1 AND cache_key = 'tokens'
+      `).run(JSON.stringify([{ id: 9, group: { name: 'default' } }]), JSON.stringify([{ id: 9, group: { name: 'default' } }]), nowIso());
       return {
         profile: {},
         balanceSnapshot: { balance: 1, unit: 'quota', raw: {} },
         groups: [{ name: 'default', rate_multiplier: 2 }],
-        tokens: [],
+        tokens: [{ id: 9, group: { name: 'default' } }],
         raw: {}
       };
     });
@@ -329,6 +347,86 @@ describe('automation evaluation', () => {
     expect(alert.type).toBe('group_ratio_changed');
     expect(alert.message).toContain('default 1 -> 2');
     expect(JSON.parse(state.value_json)).toEqual([{ name: 'default', rate_multiplier: 2 }]);
+    syncSpy.mockRestore();
+    db.close();
+  });
+
+  it('ignores ratio changes for groups that are not used by current tokens', async () => {
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO channels (id, name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES (1, 's', 'sub2api', 'http://127.0.0.1:1', 'u', 'p', 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (1, 'groups', ?, ?, ?)
+    `).run(
+      JSON.stringify([
+        { id: 1, name: 'default', rate_multiplier: 1 },
+        { id: 2, name: 'vip', rate_multiplier: 1 }
+      ]),
+      JSON.stringify([
+        { id: 1, name: 'default', rate_multiplier: 1 },
+        { id: 2, name: 'vip', rate_multiplier: 1 }
+      ]),
+      now
+    );
+    db.prepare(`
+      INSERT INTO channel_cache (channel_id, cache_key, raw_json, normalized_json, synced_at)
+      VALUES (1, 'tokens', ?, ?, ?)
+    `).run(JSON.stringify([{ id: 9, group_id: 1 }]), JSON.stringify([{ id: 9, group_id: 1 }]), now);
+    const taskId = Number(
+      db.prepare(`
+        INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+        VALUES (1, 'group_ratio_changed', 1, 1, 0, 60, 0, ?, ?)
+      `).run(now, now).lastInsertRowid
+    );
+    db.prepare(`
+      INSERT INTO automation_task_state (task_id, state_key, value_json, updated_at)
+      VALUES (?, 'groups', ?, ?)
+    `).run(
+      taskId,
+      JSON.stringify([
+        { id: 1, name: 'default', rate_multiplier: 1 },
+        { id: 2, name: 'vip', rate_multiplier: 1 }
+      ]),
+      now
+    );
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    syncSpy.mockImplementation(async () => {
+      const groups = [
+        { id: 1, name: 'default', rate_multiplier: 1 },
+        { id: 2, name: 'vip', rate_multiplier: 2 }
+      ];
+      const tokens = [{ id: 9, group_id: 1 }];
+      db.prepare(`
+        UPDATE channel_cache
+        SET raw_json = ?, normalized_json = ?, synced_at = ?
+        WHERE channel_id = 1 AND cache_key = 'groups'
+      `).run(JSON.stringify(groups), JSON.stringify(groups), nowIso());
+      db.prepare(`
+        UPDATE channel_cache
+        SET raw_json = ?, normalized_json = ?, synced_at = ?
+        WHERE channel_id = 1 AND cache_key = 'tokens'
+      `).run(JSON.stringify(tokens), JSON.stringify(tokens), nowIso());
+      return {
+        profile: {},
+        balanceSnapshot: { balance: 1, unit: 'quota', raw: {} },
+        groups,
+        tokens,
+        raw: {}
+      };
+    });
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueTasks(db, mailer);
+
+    const alertCount = db.prepare('SELECT COUNT(*) AS count FROM alert_events').get() as { count: number };
+    const state = db.prepare("SELECT value_json FROM automation_task_state WHERE task_id = ? AND state_key = 'groups'").get(taskId) as { value_json: string };
+    expect(mailer).not.toHaveBeenCalled();
+    expect(alertCount.count).toBe(0);
+    expect(JSON.parse(state.value_json)).toEqual([{ id: 1, name: 'default', rate_multiplier: 1 }]);
     syncSpy.mockRestore();
     db.close();
   });

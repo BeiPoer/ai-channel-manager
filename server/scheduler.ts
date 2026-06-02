@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { getEmailSettings, sendEmail } from './email.js';
 import { nowIso, parseJson, parseTask, readChannelCache, readTaskState, upsertTaskState } from './db.js';
+import { filterGroupsByIdentifiers, filterGroupsByTokenUsage, groupList, normalizeGroups, watchedGroupIdentifiers } from './groupMonitoring.js';
 import { syncChannel } from './adapters.js';
 import { runDueOwnedSiteTasks } from './ownedSites.js';
-import type { AutomationTaskRecord, BalanceSnapshot } from './types.js';
+import type { AutomationTaskRecord, BalanceSnapshot, ChannelType } from './types.js';
 
 export interface EvaluationResult {
   triggered: boolean;
@@ -11,73 +12,11 @@ export interface EvaluationResult {
   snapshot?: unknown;
 }
 
-interface GroupInfo {
-  key: string;
-  label: string;
-  ratio: number | null;
-  raw: unknown;
-}
-
 const groupTaskStateKey = 'groups';
 
 function minutesSince(value: string | null, now = new Date()): number {
   if (!value) return Infinity;
   return (now.getTime() - new Date(value).getTime()) / 60000;
-}
-
-function stringValue(value: unknown): string | null {
-  if (typeof value === 'string' && value.trim()) return value.trim();
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return null;
-}
-
-function groupKey(group: unknown): string {
-  if (!group || typeof group !== 'object') return stringValue(group) || JSON.stringify(group);
-  const record = group as Record<string, unknown>;
-  const keyFields = ['name', 'group', 'key', 'code', 'id', 'group_id', 'group_name', 'display_name'];
-  for (const field of keyFields) {
-    const value = stringValue(record[field]);
-    if (value) return value;
-  }
-  return JSON.stringify(record);
-}
-
-function groupRatio(group: unknown): number | null {
-  if (typeof group === 'number' && Number.isFinite(group)) return group;
-  if (!group || typeof group !== 'object') return null;
-  const record = group as Record<string, unknown>;
-  const ratioFields = ['ratio', 'rate', 'multiplier', 'rate_multiplier', 'rateMultiplier', 'group_ratio', 'model_ratio', '倍率', 'value'];
-  for (const field of ratioFields) {
-    const value = record[field];
-    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function normalizeGroups(groups: unknown): Map<string, GroupInfo> {
-  const items = Array.isArray(groups)
-    ? groups
-    : groups && typeof groups === 'object'
-      ? Object.entries(groups as Record<string, unknown>).map(([name, value]) => ({ name, ...(value && typeof value === 'object' ? value : { value }) }))
-      : [];
-  const map = new Map<string, GroupInfo>();
-  for (const item of items) {
-    const key = groupKey(item);
-    map.set(key, {
-      key,
-      label: key,
-      ratio: groupRatio(item),
-      raw: item
-    });
-  }
-  return map;
-}
-
-function groupList(groups: Iterable<GroupInfo>): string {
-  return Array.from(groups)
-    .map((group) => (group.ratio === null ? group.label : `${group.label}(${group.ratio})`))
-    .join('、');
 }
 
 export function evaluateGroupTask(
@@ -164,6 +103,22 @@ function isGroupTask(task: AutomationTaskRecord): boolean {
   return task.type === 'group_added' || task.type === 'group_removed' || task.type === 'group_ratio_changed';
 }
 
+function taskGroupsForEvaluation(
+  task: AutomationTaskRecord,
+  beforeGroups: unknown,
+  afterGroups: unknown,
+  afterTokens: unknown,
+  channelType: ChannelType
+): { before: unknown; after: unknown; state: unknown } {
+  if (task.type !== 'group_ratio_changed') return { before: beforeGroups, after: afterGroups, state: afterGroups };
+  const identifiers = watchedGroupIdentifiers(afterGroups, afterTokens, channelType);
+  return {
+    before: filterGroupsByIdentifiers(beforeGroups, identifiers),
+    after: filterGroupsByIdentifiers(afterGroups, identifiers),
+    state: filterGroupsByTokenUsage(afterGroups, afterTokens, channelType)
+  };
+}
+
 function alertSubject(task: AutomationTaskRecord): string {
   return isGroupTask(task) ? 'AI 渠道分组预警' : 'AI 渠道余额预警';
 }
@@ -196,14 +151,14 @@ async function recordAlert(
 
 export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise<void> {
   const rows = db.prepare(`
-    SELECT t.*, c.name AS channel_name
+    SELECT t.*, c.name AS channel_name, c.type AS channel_type
     FROM automation_tasks t
     JOIN channels c ON c.id = t.channel_id
     WHERE t.enabled = 1
-  `).all() as unknown as Array<AutomationTaskRecord & { channel_name: string }>;
+  `).all() as unknown as Array<AutomationTaskRecord & { channel_name: string; channel_type: ChannelType }>;
   const now = new Date();
   const dueRows = rows.filter((row) => minutesSince(row.last_run_at, now) >= row.interval_minutes);
-  const rowsByChannel = new Map<number, Array<AutomationTaskRecord & { channel_name: string }>>();
+  const rowsByChannel = new Map<number, Array<AutomationTaskRecord & { channel_name: string; channel_type: ChannelType }>>();
   for (const row of dueRows) {
     const channelRows = rowsByChannel.get(row.channel_id) || [];
     channelRows.push(row);
@@ -222,6 +177,7 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
       continue;
     }
     const afterGroups = readChannelCache(db, first.channel_id, 'groups', []);
+    const afterTokens = readChannelCache(db, first.channel_id, 'tokens', []);
     const snapshots = db.prepare(`
       SELECT * FROM balance_snapshots
       WHERE channel_id = ? AND captured_at >= ?
@@ -231,8 +187,9 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
       if (isGroupTask(row)) {
         const taskGroups = readTaskState(db, row.id, groupTaskStateKey, []);
         const beforeGroups = taskGroups.exists ? taskGroups : beforeChannelGroups;
-        await recordAlert(db, row, evaluateGroupTask(row, beforeGroups.value, afterGroups.value, row.channel_name, beforeGroups.exists), now, mailer);
-        upsertTaskState(db, row.id, groupTaskStateKey, afterGroups.value);
+        const groups = taskGroupsForEvaluation(row, beforeGroups.value, afterGroups.value, afterTokens.value, row.channel_type);
+        await recordAlert(db, row, evaluateGroupTask(row, groups.before, groups.after, row.channel_name, beforeGroups.exists), now, mailer);
+        upsertTaskState(db, row.id, groupTaskStateKey, groups.state);
         continue;
       }
       const cutoff = new Date(now.getTime() - row.lookback_minutes * 60000);
