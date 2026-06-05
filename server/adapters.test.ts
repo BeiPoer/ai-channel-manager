@@ -178,6 +178,38 @@ describe('channel adapters', () => {
     db.close();
   });
 
+  it('rejects record-only other channel sync and token capabilities without upstream requests', async () => {
+    let requestCount = 0;
+    const baseUrl = await startMock((_req, res) => {
+      requestCount += 1;
+      return json(res, 500, { message: 'other channels must not call upstream' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES ('o', 'other', ?, 'u@example.com', 'pw', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+    const channelId = Number(result.lastInsertRowid);
+
+    await expect(syncChannel(db, channelId)).rejects.toThrow(/其它渠道/);
+    await expect(updateTokenGroup(db, channelId, 1, { group_id: 1 })).rejects.toThrow(/其它渠道/);
+    await expect(getTokenModels(db, channelId, 1)).rejects.toThrow(/其它渠道/);
+
+    const channel = db.prepare('SELECT status, last_error, last_sync_at FROM channels WHERE id = ?').get(channelId) as {
+      status: string;
+      last_error: string | null;
+      last_sync_at: string | null;
+    };
+    const queryLogCount = db.prepare('SELECT COUNT(*) AS count FROM balance_query_logs').get() as { count: number };
+    expect(channel.status).toBe('active');
+    expect(channel.last_error).toBeNull();
+    expect(channel.last_sync_at).toBeNull();
+    expect(queryLogCount.count).toBe(0);
+    expect(requestCount).toBe(0);
+    db.close();
+  });
+
   it('migrates old new-api quota snapshots to display units when syncing', async () => {
     const baseUrl = await startMock((req, res, url) => {
       if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });

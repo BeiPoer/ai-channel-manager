@@ -115,7 +115,7 @@ function taskPayload(body: Record<string, unknown>, partial = false) {
 
 function normalizeChannelInput(body: Record<string, unknown>, existing?: ChannelRecord) {
   const type = (body.type || existing?.type) as ChannelType;
-  if (type !== 'sub2api' && type !== 'newapi') throw new UpstreamError('渠道类型无效', 400);
+  if (type !== 'sub2api' && type !== 'newapi' && type !== 'other') throw new UpstreamError('渠道类型无效', 400);
   const baseUrl = body.base_url !== undefined ? normalizeBaseUrl(String(body.base_url)) : existing?.base_url;
   if (!baseUrl) throw new UpstreamError('站点链接不能为空', 400);
   return {
@@ -130,6 +130,10 @@ function normalizeChannelInput(body: Record<string, unknown>, existing?: Channel
         : existing?.newapi_access_token || null,
     newapi_user_id: body.newapi_user_id !== undefined ? String(body.newapi_user_id || '').trim() || null : existing?.newapi_user_id || null
   };
+}
+
+function ensureActionableChannel(channel: ChannelRecord, action: string): void {
+  if (channel.type === 'other') throw new UpstreamError(`其它渠道仅用于记录，不支持${action}`, 400);
 }
 
 function normalizeOwnedSiteInput(body: Record<string, unknown>, existing?: OwnedSiteRecord) {
@@ -190,8 +194,8 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
 
   app.post('/api/channels', asyncRoute(async (req, res) => {
     const input = normalizeChannelInput(req.body || {});
-    if (input.type === 'sub2api' && (!input.username || !input.password)) {
-      throw new UpstreamError('sub2api 渠道需要账号和密码', 400);
+    if ((input.type === 'sub2api' || input.type === 'other') && (!input.username || !input.password)) {
+      throw new UpstreamError(`${input.type === 'sub2api' ? 'sub2api' : '其它'}渠道需要账号和密码`, 400);
     }
     if (input.type === 'newapi' && (!input.newapi_access_token || !input.newapi_user_id)) {
       throw new UpstreamError('new-api 渠道需要系统访问令牌和 userId', 400);
@@ -200,9 +204,24 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const result = db.prepare(`
       INSERT INTO channels (
         name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'syncing', ?, ?)
-    `).run(input.name, input.type, input.base_url, input.username, input.password, input.newapi_access_token, input.newapi_user_id, now, now);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.name,
+      input.type,
+      input.base_url,
+      input.username,
+      input.password,
+      input.newapi_access_token,
+      input.newapi_user_id,
+      input.type === 'other' ? 'active' : 'syncing',
+      now,
+      now
+    );
     const id = Number(result.lastInsertRowid);
+    if (input.type === 'other') {
+      res.status(201).json(sanitizeChannel(ensureChannel(db, id)));
+      return;
+    }
     try {
       await syncChannel(db, id);
       res.status(201).json(sanitizeChannel(ensureChannel(db, id)));
@@ -274,6 +293,7 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
 
   app.get('/api/channels/:id/tokens/:tokenId/models', asyncRoute(async (req, res) => {
     const id = idParam(req);
+    ensureActionableChannel(ensureChannel(db, id), '查询令牌模型');
     const tokenId = Number(req.params.tokenId);
     if (!Number.isInteger(tokenId) || tokenId <= 0) throw new UpstreamError('无效的令牌 ID', 400);
     res.json(await getTokenModels(db, id, tokenId));
@@ -281,6 +301,7 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
 
   app.put('/api/channels/:id/tokens/:tokenId/group', asyncRoute(async (req, res) => {
     const id = idParam(req);
+    ensureActionableChannel(ensureChannel(db, id), '修改令牌分组');
     const tokenId = Number(req.params.tokenId);
     if (!Number.isInteger(tokenId) || tokenId <= 0) throw new UpstreamError('无效的令牌 ID', 400);
     const result = await updateTokenGroup(db, id, tokenId, req.body || {});
@@ -331,7 +352,7 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
 
   app.post('/api/channels/:id/tasks', (req, res) => {
     const id = idParam(req);
-    ensureChannel(db, id);
+    ensureActionableChannel(ensureChannel(db, id), '配置自动化告警');
     const payload = taskPayload(req.body || {});
     if (!isGroupTaskType(payload.type) && payload.threshold === undefined) throw new UpstreamError('预警阈值无效', 400);
     const now = nowIso();
@@ -362,7 +383,7 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
 
   app.put('/api/channels/:id/tasks/:taskId', (req, res) => {
     const id = idParam(req);
-    ensureChannel(db, id);
+    ensureActionableChannel(ensureChannel(db, id), '配置自动化告警');
     const taskId = Number(req.params.taskId);
     const existing = db.prepare('SELECT * FROM automation_tasks WHERE id = ? AND channel_id = ?').get(taskId, id) as unknown as AutomationTaskRecord | undefined;
     if (!existing) throw new UpstreamError('任务不存在', 404);

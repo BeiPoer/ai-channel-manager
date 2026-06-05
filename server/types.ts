@@ -1,4 +1,4 @@
-export type ChannelType = 'sub2api' | 'newapi';
+export type ChannelType = 'sub2api' | 'newapi' | 'other';
 export type ChannelStatus = 'active' | 'error' | 'syncing';
 export type CacheKey = 'profile' | 'groups' | 'tokens' | 'subscriptions';
 export type AutomationTaskType = 'low_balance' | 'burn_rate' | 'group_added' | 'group_removed' | 'group_ratio_changed';

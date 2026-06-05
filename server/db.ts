@@ -35,7 +35,7 @@ export function migrate(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS channels (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      type TEXT NOT NULL CHECK (type IN ('sub2api', 'newapi')),
+      type TEXT NOT NULL CHECK (type IN ('sub2api', 'newapi', 'other')),
       base_url TEXT NOT NULL,
       username TEXT,
       password TEXT,
@@ -189,8 +189,50 @@ export function migrate(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
   `);
+  migrateChannelTypes(db);
   migrateAutomationTaskTypes(db);
   seedExistingGroupTaskState(db);
+}
+
+function migrateChannelTypes(db: DatabaseSync): void {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channels'").get() as { sql: string } | undefined;
+  if (!table?.sql || table.sql.includes("'other'")) return;
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN;
+    CREATE TABLE channels_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('sub2api', 'newapi', 'other')),
+      base_url TEXT NOT NULL,
+      username TEXT,
+      password TEXT,
+      newapi_access_token TEXT,
+      newapi_user_id TEXT,
+      sub2api_access_token TEXT,
+      sub2api_refresh_token TEXT,
+      sub2api_token_expires_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'syncing',
+      last_sync_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO channels_new (
+      id, name, type, base_url, username, password, newapi_access_token, newapi_user_id,
+      sub2api_access_token, sub2api_refresh_token, sub2api_token_expires_at,
+      status, last_sync_at, last_error, created_at, updated_at
+    )
+    SELECT
+      id, name, type, base_url, username, password, newapi_access_token, newapi_user_id,
+      sub2api_access_token, sub2api_refresh_token, sub2api_token_expires_at,
+      status, last_sync_at, last_error, created_at, updated_at
+    FROM channels;
+    DROP TABLE channels;
+    ALTER TABLE channels_new RENAME TO channels;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
 }
 
 function migrateAutomationTaskTypes(db: DatabaseSync): void {

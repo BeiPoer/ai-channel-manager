@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrate } from './db.js';
@@ -175,6 +176,86 @@ describe('local API', () => {
     const cacheCount = db.prepare('SELECT COUNT(*) AS count FROM channel_cache').get() as { count: number };
     expect(taskCount.count).toBe(0);
     expect(cacheCount.count).toBe(0);
+    db.close();
+  });
+
+  it('creates record-only other channels without syncing upstream capabilities', async () => {
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+
+    const created = await agent
+      .post('/api/channels')
+      .send({ type: 'other', base_url: 'https://other.example.com/', username: 'u', password: 'p', name: 'record only' })
+      .expect(201);
+
+    expect(created.body).toMatchObject({
+      type: 'other',
+      status: 'active',
+      last_sync_at: null,
+      last_error: null,
+      has_password: true,
+      password: 'p'
+    });
+
+    const cacheCount = db.prepare('SELECT COUNT(*) AS count FROM channel_cache').get() as { count: number };
+    const snapshotCount = db.prepare('SELECT COUNT(*) AS count FROM balance_snapshots').get() as { count: number };
+    const queryLogCount = db.prepare('SELECT COUNT(*) AS count FROM balance_query_logs').get() as { count: number };
+    expect(cacheCount.count).toBe(0);
+    expect(snapshotCount.count).toBe(0);
+    expect(queryLogCount.count).toBe(0);
+
+    const overview = await agent.get(`/api/channels/${created.body.id}/overview`).expect(200);
+    expect(overview.body).toMatchObject({
+      profile: null,
+      groups: [],
+      tokens: [],
+      subscriptions: null,
+      latest_snapshot: null,
+      history: []
+    });
+
+    const sync = await agent.post(`/api/channels/${created.body.id}/sync`).expect(400);
+    expect(sync.body.error).toContain('其它渠道');
+    const task = await agent.post(`/api/channels/${created.body.id}/tasks`).send({ type: 'low_balance', threshold: 1 }).expect(400);
+    expect(task.body.error).toContain('其它渠道');
+    const login = await agent.get(`/api/channels/${created.body.id}/upstream-login`).expect(400);
+    expect(login.body.error).toContain('当前仅支持 sub2api');
+    db.close();
+  });
+
+  it('migrates existing channel type constraints to allow other channels', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`
+      CREATE TABLE channels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('sub2api', 'newapi')),
+        base_url TEXT NOT NULL,
+        username TEXT,
+        password TEXT,
+        newapi_access_token TEXT,
+        newapi_user_id TEXT,
+        sub2api_access_token TEXT,
+        sub2api_refresh_token TEXT,
+        sub2api_token_expires_at INTEGER,
+        status TEXT NOT NULL DEFAULT 'syncing',
+        last_sync_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    migrate(db);
+    const now = new Date().toISOString();
+    expect(() => {
+      db.prepare(`
+        INSERT INTO channels (name, type, base_url, username, password, status, created_at, updated_at)
+        VALUES ('o', 'other', 'https://other.example.com', 'u', 'p', 'active', ?, ?)
+      `).run(now, now);
+    }).not.toThrow();
     db.close();
   });
 

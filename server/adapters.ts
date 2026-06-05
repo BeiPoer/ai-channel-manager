@@ -785,6 +785,7 @@ function persistSyncResult(db: DatabaseSync, channel: ChannelRecord, result: Syn
 export async function syncChannel(db: DatabaseSync, channelId: number): Promise<SyncResult> {
   const channel = getChannel(db, channelId);
   if (!channel) throw new UpstreamError('渠道不存在', 404);
+  if (channel.type === 'other') throw new UpstreamError('其它渠道仅用于记录，不支持同步', 400);
   db.prepare('UPDATE channels SET status = ?, updated_at = ? WHERE id = ?').run('syncing', nowIso(), channel.id);
   try {
     const result = channel.type === 'sub2api' ? await syncSub2api(db, channel) : await syncNewApi(db, channel);
@@ -804,6 +805,7 @@ export async function updateTokenGroup(
 ): Promise<{ token: unknown; tokens: unknown[] }> {
   const channel = getChannel(db, channelId);
   if (!channel) throw new UpstreamError('渠道不存在', 404);
+  if (channel.type === 'other') throw new UpstreamError('其它渠道仅用于记录，不支持修改令牌分组', 400);
   const token = channel.type === 'sub2api' ? await updateSub2apiTokenGroup(db, channel, tokenId, payload) : await updateNewApiTokenGroup(channel, tokenId, payload);
   const cached = updateTokenCache(db, channel.id, token);
   const tokens = await refreshTokenCache(db, channel).catch(() => cached);
@@ -813,6 +815,7 @@ export async function updateTokenGroup(
 export async function getTokenModels(db: DatabaseSync, channelId: number, tokenId: number): Promise<TokenModelsResult> {
   const channel = getChannel(db, channelId);
   if (!channel) throw new UpstreamError('渠道不存在', 404);
+  if (channel.type === 'other') throw new UpstreamError('其它渠道仅用于记录，不支持查询令牌模型', 400);
   return channel.type === 'sub2api' ? getSub2apiTokenModels(db, channel, tokenId) : getNewApiTokenModels(db, channel, tokenId);
 }
 

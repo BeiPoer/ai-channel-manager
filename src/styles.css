@@ -439,6 +439,11 @@ small,
   color: var(--primary-strong);
 }
 
+.typeBadge.other {
+  background: var(--surface-muted);
+  color: var(--muted-strong);
+}
+
 .mainArea {
   min-width: 0;
   padding: 22px;
@@ -1345,6 +1350,10 @@ select {
 }
 
 .taskTypePicker {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.channelTypePicker {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 

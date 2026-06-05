@@ -522,7 +522,9 @@ function tokenGroupOptions(overview: Overview, rows: Record<string, unknown>[]):
 }
 
 function currentTokenGroupValue(channelType: ChannelType, row: Record<string, unknown>): string {
-  return channelType === 'sub2api' ? groupIdFrom(row) : groupNameFrom(row.group);
+  if (channelType === 'sub2api') return groupIdFrom(row);
+  if (channelType === 'newapi') return groupNameFrom(row.group);
+  return '';
 }
 
 function tokenColumns(rows: Record<string, unknown>[]) {
@@ -541,6 +543,7 @@ function tokenColumns(rows: Record<string, unknown>[]) {
 
 function credentialLabel(channel: Channel) {
   if (channel.type === 'sub2api') return channel.has_password ? '密码已保存' : '待配置密码';
+  if (channel.type === 'other') return channel.has_password ? '密码已保存' : '待配置密码';
   return channel.has_newapi_access_token ? '令牌已保存' : '待配置令牌';
 }
 
@@ -582,7 +585,8 @@ function StatusBadge({ status }: { status: Channel['status'] | OwnedSite['status
 }
 
 function TypeBadge({ type }: { type: ChannelType | OwnedSite['type'] }) {
-  return <span className={`typeBadge ${type}`}>{type === 'sub2api' ? 'sub2api' : 'new-api'}</span>;
+  const label = type === 'sub2api' ? 'sub2api' : type === 'newapi' ? 'new-api' : '其它';
+  return <span className={`typeBadge ${type}`}>{label}</span>;
 }
 
 function AccountStatusBadge({ status }: { status: string }) {
@@ -751,6 +755,7 @@ function ChannelModal({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const isPasswordRequired = !channel && (type === 'sub2api' || type === 'other');
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -775,19 +780,22 @@ function ChannelModal({
           <div>
             <span className="modalEyebrow">{channel ? 'CHANNEL EDIT' : 'NEW CHANNEL'}</span>
             <h2>{channel ? '编辑渠道' : '添加渠道'}</h2>
-            <p>配置渠道认证后即可同步余额、账号资料和自动化告警。</p>
+            <p>{type === 'other' ? '记录型渠道只保存站点和账号信息，不执行同步、余额查询或告警。' : '配置渠道认证后即可同步余额、账号资料和自动化告警。'}</p>
           </div>
           <button type="button" className="iconButton" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
 
-        <div className="segmented">
+        <div className="segmented channelTypePicker">
           <button type="button" className={type === 'sub2api' ? 'active' : ''} onClick={() => setType('sub2api')} disabled={Boolean(channel)}>
             sub2api
           </button>
           <button type="button" className={type === 'newapi' ? 'active' : ''} onClick={() => setType('newapi')} disabled={Boolean(channel)}>
             new-api
+          </button>
+          <button type="button" className={type === 'other' ? 'active' : ''} onClick={() => setType('other')} disabled={Boolean(channel)}>
+            其它
           </button>
         </div>
 
@@ -802,13 +810,13 @@ function ChannelModal({
         <div className="formGrid">
           <label>
             账号
-            <input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
+            <input required={isPasswordRequired} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} />
           </label>
           <label>
             密码
             <input
               type="text"
-              required={!channel && type === 'sub2api'}
+              required={isPasswordRequired}
               value={form.password}
               onChange={(event) => setForm({ ...form, password: event.target.value })}
             />
@@ -1378,6 +1386,7 @@ function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; on
   const [message, setMessage] = useState<MessageState>(null);
   const snapshot = overview.latest_snapshot;
   const status = overview.channel.status;
+  const isRecordOnly = overview.channel.type === 'other';
   const lastSync = formatTime(overview.channel.last_sync_at, '尚未同步');
   const activeSubscriptions = subscriptionRows(overview.subscriptions);
   const profile = overview.profile || {};
@@ -1398,6 +1407,64 @@ function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; on
     } catch (err) {
       setMessage({ tone: 'error', text: (err as Error).message || `${label}复制失败` });
     }
+  }
+
+  if (isRecordOnly) {
+    return (
+      <>
+        <div className="metricGrid">
+          <MetricCard label="渠道用途" value="记录" meta="不执行上游同步" icon={<Database size={18} />} tone="accent" />
+          <MetricCard label="账号" value={overview.channel.username || '-'} meta={credentialLabel(overview.channel)} icon={<KeyRound size={18} />} />
+          <MetricCard
+            label="记录状态"
+            value={statusCopy[status].label}
+            meta={`更新时间 ${formatShortTime(overview.channel.updated_at, '-')}`}
+            icon={<CheckCircle2 size={18} />}
+            tone="success"
+          />
+        </div>
+
+        <DataSection title="记录信息" description="其它渠道仅保存站点和账号，不支持同步、分组、令牌、余额查询或告警" icon={<Database size={17} />}>
+          <div className="snapshotList">
+            <div>
+              <span>站点</span>
+              <strong>{overview.channel.base_url}</strong>
+            </div>
+            <div>
+              <span>账号</span>
+              {overview.channel.username ? (
+                <button type="button" className="snapshotCopyButton" onClick={() => void copySnapshotValue('账号', overview.channel.username)}>
+                  <strong>{overview.channel.username}</strong>
+                  <Copy size={13} />
+                </button>
+              ) : (
+                <strong>-</strong>
+              )}
+            </div>
+            <div>
+              <span>密码</span>
+              {passwordText ? (
+                <button type="button" className="snapshotCopyButton" onClick={() => void copySnapshotValue('密码', passwordText)}>
+                  <strong>{passwordText}</strong>
+                  <Copy size={13} />
+                </button>
+              ) : (
+                <strong>-</strong>
+              )}
+            </div>
+            <div>
+              <span>创建时间</span>
+              <strong>{formatShortTime(overview.channel.created_at, '-')}</strong>
+            </div>
+            <div>
+              <span>更新时间</span>
+              <strong>{formatShortTime(overview.channel.updated_at, '-')}</strong>
+            </div>
+          </div>
+          {message && <div className={`inlineNotice ${message.tone}`}>{message.text}</div>}
+        </DataSection>
+      </>
+    );
   }
 
   return (
@@ -2958,6 +3025,7 @@ export default function App() {
   const [emailOpen, setEmailOpen] = useState(false);
 
   const selected = channels.find((channel) => channel.id === selectedId) || null;
+  const selectedIsRecordOnly = selected?.type === 'other';
   const filtered = useMemo(
     () => channels.filter((channel) => `${channel.name} ${channel.base_url} ${channel.username || ''}`.toLowerCase().includes(query.toLowerCase())),
     [channels, query]
@@ -3166,6 +3234,14 @@ export default function App() {
     { key: 'balance-logs', label: '余额查询', icon: <ListChecks size={16} /> },
     { key: 'alerts', label: '告警', icon: <Bell size={16} /> }
   ];
+  const visibleTabs = selectedIsRecordOnly ? tabs.filter((item) => item.key === 'overview') : tabs;
+
+  useEffect(() => {
+    if (selectedIsRecordOnly && tab !== 'overview') {
+      if (selectedId) navigate({ module: 'channels', channelId: selectedId, tab: 'overview' }, 'replace');
+      else navigate({ module: 'channels', tab: 'overview' }, 'replace');
+    }
+  }, [navigate, selectedId, selectedIsRecordOnly, tab]);
 
   if (authState === 'checking') {
     return (
@@ -3317,10 +3393,12 @@ export default function App() {
                   <Pencil size={16} />
                   编辑
                 </button>
-                <button className="ghostButton" onClick={syncSelected} disabled={loading}>
-                  <RefreshCw size={16} className={loading ? 'spin' : ''} />
-                  同步
-                </button>
+                {!selectedIsRecordOnly && (
+                  <button className="ghostButton" onClick={syncSelected} disabled={loading}>
+                    <RefreshCw size={16} className={loading ? 'spin' : ''} />
+                    同步
+                  </button>
+                )}
                 <button className="ghostButton dangerText" onClick={deleteSelected} disabled={loading}>
                   <Trash2 size={16} />
                   删除
@@ -3342,7 +3420,7 @@ export default function App() {
             )}
 
             <nav className="tabs">
-              {tabs.map((item) => (
+              {visibleTabs.map((item) => (
                 <button
                   key={item.key}
                   className={tab === item.key ? 'active' : ''}
@@ -3366,7 +3444,7 @@ export default function App() {
                 ) : (
                   <EmptyPanel icon={<Database size={24} />} title="暂无概览数据，先执行一次同步" />
                 ))}
-              {tab === 'automation' && (
+              {tab === 'automation' && !selectedIsRecordOnly && (
                 <AutomationPanel
                   channel={selected}
                   onAlertsChanged={() => {
@@ -3375,8 +3453,8 @@ export default function App() {
                   }}
                 />
               )}
-              {tab === 'balance-logs' && <BalanceQueryLogsPanel channel={selected} refreshKey={balanceLogsRefreshKey} />}
-              {tab === 'alerts' && <AlertsPanel alerts={alerts} />}
+              {tab === 'balance-logs' && !selectedIsRecordOnly && <BalanceQueryLogsPanel channel={selected} refreshKey={balanceLogsRefreshKey} />}
+              {tab === 'alerts' && !selectedIsRecordOnly && <AlertsPanel alerts={alerts} />}
             </section>
           </>
         ) : (
