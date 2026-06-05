@@ -1,6 +1,6 @@
 {
   "accessPassword": "change-this-password",
   "sessionSecret": "replace-with-a-long-random-string",
-  "sessionTtlHours": 24,
+  "sessionTtlHours": 720,
   "secureCookies": false
 }

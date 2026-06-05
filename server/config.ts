@@ -44,7 +44,7 @@ export function loadConfig(configPath = process.env.APP_CONFIG_PATH || defaultCo
   return {
     accessPassword,
     sessionSecret,
-    sessionTtlHours: readNumber(record.sessionTtlHours, 24),
+    sessionTtlHours: readNumber(record.sessionTtlHours, 720),
     secureCookies: Boolean(record.secureCookies)
   };
 }
