@@ -1,0 +1,21 @@
+server/config.ts
+  s_e6b3e90318717f::t_794c170c017d90 47
+config.example.json
+  s_e6b3e90318717f::t_56280872900589 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f654d79e32e128b0f42e62ced74bea372d282e19",
+  "prompts": {},
+  "sessions": {
+    "s_e6b3e90318717f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e9564-5052-7371-a94f-ef058c6019b0",
+        "model": "gpt-5.5"
+      },
+      "human_author": "astorm-z <forczc@foxmail.com>"
+    }
+  }
+}
