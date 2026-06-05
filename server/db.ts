@@ -71,6 +71,19 @@ export function migrate(db: DatabaseSync): void {
       captured_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS balance_query_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('success', 'error')),
+      balance REAL,
+      used_balance REAL,
+      unit TEXT,
+      message TEXT NOT NULL,
+      error TEXT,
+      raw_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS automation_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,

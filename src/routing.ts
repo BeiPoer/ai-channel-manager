@@ -1,4 +1,4 @@
-export type ChannelTabKey = 'overview' | 'automation' | 'alerts';
+export type ChannelTabKey = 'overview' | 'automation' | 'balance-logs' | 'alerts';
 export type OwnedSiteTabKey = 'overview' | 'groups' | 'accounts' | 'automation' | 'alerts';
 
 export type AppRoute =
@@ -8,7 +8,7 @@ export type AppRoute =
 
 export type NavigationMode = 'push' | 'replace';
 
-const channelTabs = new Set<ChannelTabKey>(['overview', 'automation', 'alerts']);
+const channelTabs = new Set<ChannelTabKey>(['overview', 'automation', 'balance-logs', 'alerts']);
 const ownedSiteTabs = new Set<OwnedSiteTabKey>(['overview', 'groups', 'accounts', 'automation', 'alerts']);
 
 function positiveInteger(value: string | undefined): number | undefined {

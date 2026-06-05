@@ -54,6 +54,21 @@ export interface BalanceSnapshot {
   captured_at: string;
 }
 
+export type BalanceQueryStatus = 'success' | 'error';
+
+export interface BalanceQueryLogRecord {
+  id: number;
+  channel_id: number;
+  status: BalanceQueryStatus;
+  balance: number | null;
+  used_balance: number | null;
+  unit: string | null;
+  message: string;
+  error: string | null;
+  raw_json: string | null;
+  created_at: string;
+}
+
 export interface SyncResult {
   profile: unknown;
   balanceSnapshot: {

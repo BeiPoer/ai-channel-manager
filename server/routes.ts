@@ -60,6 +60,11 @@ function listCache(db: DatabaseSync, channelId: number, key: string, fallback: u
   return readChannelCache(db, channelId, key, fallback).value;
 }
 
+function positiveQueryInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const taskTypes: AutomationTaskType[] = ['low_balance', 'burn_rate', 'group_added', 'group_removed', 'group_ratio_changed'];
 const groupTaskStateKey = 'groups';
 const taskTimingDefaults: Record<AutomationTaskType, { interval_minutes: number; cooldown_minutes: number }> = {
@@ -297,6 +302,24 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     ensureChannel(db, id);
     const rows = db.prepare('SELECT * FROM balance_snapshots WHERE channel_id = ? ORDER BY captured_at ASC LIMIT 200').all(id);
     res.json(rows);
+  });
+
+  app.get('/api/channels/:id/balance-query-logs', (req, res) => {
+    const id = idParam(req);
+    ensureChannel(db, id);
+    const pageSize = 10;
+    const page = positiveQueryInteger(req.query.page, 1);
+    const total = (db.prepare('SELECT COUNT(*) AS count FROM balance_query_logs WHERE channel_id = ?').get(id) as { count: number }).count;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(page, pages);
+    const items = db.prepare(`
+      SELECT *
+      FROM balance_query_logs
+      WHERE channel_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(id, pageSize, (currentPage - 1) * pageSize);
+    res.json({ items, total, page: currentPage, page_size: pageSize, pages });
   });
 
   app.get('/api/channels/:id/tasks', (req, res) => {

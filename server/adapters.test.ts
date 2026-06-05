@@ -54,8 +54,39 @@ describe('channel adapters', () => {
 
     const snapshot = db.prepare('SELECT * FROM balance_snapshots').get() as { balance: number };
     const tokens = db.prepare("SELECT normalized_json FROM channel_cache WHERE cache_key = 'tokens'").get() as { normalized_json: string };
+    const queryLog = db.prepare('SELECT * FROM balance_query_logs').get() as { status: string; balance: number; error: string | null };
     expect(snapshot.balance).toBe(12.5);
     expect(JSON.parse(tokens.normalized_json)).toHaveLength(1);
+    expect(queryLog).toMatchObject({ status: 'success', balance: 12.5, error: null });
+    db.close();
+  });
+
+  it('fails sub2api sync and records a failed balance query when balance is missing', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (url.pathname === '/api/v1/auth/login') return json(res, 200, { code: 0, data: { access_token: 'access-a', refresh_token: 'refresh-a' } });
+      if (req.headers.authorization !== 'Bearer access-a') return json(res, 401, { message: 'unauthorized' });
+      if (url.pathname === '/api/v1/auth/me') return json(res, 200, { code: 0, data: { id: 7, email: 'u@example.com' } });
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES ('s', 'sub2api', ?, 'u@example.com', 'pw', 'syncing', ?, ?)
+    `).run(baseUrl, now, now);
+
+    await expect(syncChannel(db, Number(result.lastInsertRowid))).rejects.toThrow(/balance/);
+
+    const snapshotCount = db.prepare('SELECT COUNT(*) AS count FROM balance_snapshots').get() as { count: number };
+    const queryLog = db.prepare('SELECT * FROM balance_query_logs').get() as { status: string; balance: number | null; error: string; raw_json: string };
+    const channel = db.prepare('SELECT status, last_error FROM channels').get() as { status: string; last_error: string };
+    expect(snapshotCount.count).toBe(0);
+    expect(queryLog.status).toBe('error');
+    expect(queryLog.balance).toBeNull();
+    expect(queryLog.error).toContain('balance');
+    expect(JSON.parse(queryLog.raw_json)).toEqual({ id: 7, email: 'u@example.com' });
+    expect(channel.status).toBe('error');
+    expect(channel.last_error).toContain('balance');
     db.close();
   });
 
@@ -113,8 +144,37 @@ describe('channel adapters', () => {
     await syncChannel(db, Number(result.lastInsertRowid));
 
     const snapshot = db.prepare('SELECT * FROM balance_snapshots').get() as { balance: number; used_balance: number };
+    const queryLog = db.prepare('SELECT * FROM balance_query_logs').get() as { status: string; balance: number; used_balance: number; unit: string };
     expect(snapshot.balance).toBe(2);
     expect(snapshot.used_balance).toBe(0.5);
+    expect(queryLog).toMatchObject({ status: 'success', balance: 2, used_balance: 0.5, unit: 'new-api-USD' });
+    db.close();
+  });
+
+  it('fails new-api sync and records a failed balance query when quota is missing', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers.authorization !== 'Bearer system-token') return json(res, 401, { success: false, message: 'missing token' });
+      if (req.headers['new-api-user'] !== '42') return json(res, 403, { success: false, message: 'bad user' });
+      if (url.pathname === '/api/user/self') return json(res, 200, { success: true, data: { id: 42, used_quota: 250000 } });
+      return json(res, 404, { success: false, message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, password, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'p', 'system-token', '42', 'syncing', ?, ?)
+    `).run(baseUrl, now, now);
+
+    await expect(syncChannel(db, Number(result.lastInsertRowid))).rejects.toThrow(/quota/);
+
+    const snapshotCount = db.prepare('SELECT COUNT(*) AS count FROM balance_snapshots').get() as { count: number };
+    const queryLog = db.prepare('SELECT * FROM balance_query_logs').get() as { status: string; balance: number | null; error: string; raw_json: string };
+    expect(snapshotCount.count).toBe(0);
+    expect(queryLog.status).toBe('error');
+    expect(queryLog.balance).toBeNull();
+    expect(queryLog.error).toContain('quota');
+    expect(JSON.parse(queryLog.raw_json)).toEqual({ id: 42, used_quota: 250000 });
     db.close();
   });
 

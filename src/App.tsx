@@ -22,6 +22,7 @@ import {
   Settings,
   ShieldAlert,
   Trash2,
+  ListChecks,
   Users,
   WalletCards,
   X,
@@ -36,6 +37,7 @@ import type {
   AlertEvent,
   AuthState,
   AutomationTask,
+  BalanceQueryLog,
   Channel,
   ChannelType,
   EmailSettings,
@@ -1744,6 +1746,112 @@ function AlertsPanel({ alerts }: { alerts: AlertEvent[] }) {
   );
 }
 
+function BalanceQueryLogsPanel({ channel, refreshKey }: { channel: Channel; refreshKey: number }) {
+  const [result, setResult] = useState<PaginatedResult<BalanceQueryLog> | null>(null);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setPage(1);
+  }, [channel.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    api
+      .balanceQueryLogs(channel.id, page)
+      .then((data) => {
+        if (!cancelled) setResult(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channel.id, page, refreshKey]);
+
+  const totalPages = Math.max(1, result?.pages || 1);
+
+  return (
+    <DataSection
+      title="余额查询记录"
+      description="记录每次余额查询的成功结果和失败原因"
+      icon={<ListChecks size={17} />}
+      right={<span className="dataPill">{result ? `${result.total} 条` : '每页 10 条'}</span>}
+    >
+      {error && <div className="inlineNotice error">{error}</div>}
+      {loading && !result ? (
+        <LoadingState label="正在加载余额查询记录" />
+      ) : result?.items.length ? (
+        <>
+          <div className="tableWrap balanceLogTable">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>状态</th>
+                  <th>余额</th>
+                  <th>已用余额</th>
+                  <th>单位</th>
+                  <th>结果</th>
+                  <th>失败原因</th>
+                  <th>原始返回</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.items.map((item) => (
+                  <tr key={item.id}>
+                    <td>{formatTime(item.created_at)}</td>
+                    <td>
+                      <span className={`queryStatus ${item.status}`}>{item.status === 'success' ? '成功' : '失败'}</span>
+                    </td>
+                    <td>{item.balance === null ? '-' : formatNumber(item.balance)}</td>
+                    <td>{item.used_balance === null ? '-' : formatNumber(item.used_balance)}</td>
+                    <td>{item.unit || '-'}</td>
+                    <td title={item.message}>{item.message}</td>
+                    <td className="balanceLogError" title={item.error || '-'}>
+                      {item.error || '-'}
+                    </td>
+                    <td title={item.raw_json || '-'}>
+                      {item.raw_json ? item.raw_json.slice(0, 120) : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="paginationBar">
+            <span>
+              第 {result.page} / {totalPages} 页
+            </span>
+            <div className="paginationActions">
+              <button className="ghostButton" type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={loading || page <= 1}>
+                上一页
+              </button>
+              <button
+                className="ghostButton"
+                type="button"
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={loading || page >= totalPages}
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <EmptyPanel icon={<ListChecks size={24} />} title="暂无余额查询记录" />
+      )}
+    </DataSection>
+  );
+}
+
 function HomeSwitcher({
   onSelect,
   onLogout,
@@ -2843,6 +2951,7 @@ export default function App() {
   const [tab, setTab] = useState<TabKey>(route.module === 'channels' ? route.tab : 'overview');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
+  const [balanceLogsRefreshKey, setBalanceLogsRefreshKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [channelModal, setChannelModal] = useState<Channel | null | 'new'>(null);
@@ -3014,9 +3123,11 @@ export default function App() {
       await loadChannels(selectedId);
       setOverview(await api.overview(selectedId));
       if (tab === 'alerts') setAlerts(await api.alerts(selectedId));
+      setBalanceLogsRefreshKey((value) => value + 1);
     } catch (err) {
       setError((err as Error).message);
       await loadChannels(selectedId).catch(() => undefined);
+      setBalanceLogsRefreshKey((value) => value + 1);
     } finally {
       setLoading(false);
     }
@@ -3052,6 +3163,7 @@ export default function App() {
   const tabs: Array<{ key: TabKey; label: string; icon: ReactNode }> = [
     { key: 'overview', label: '概览', icon: <CircleDollarSign size={16} /> },
     { key: 'automation', label: '自动化', icon: <Clock3 size={16} /> },
+    { key: 'balance-logs', label: '余额查询', icon: <ListChecks size={16} /> },
     { key: 'alerts', label: '告警', icon: <Bell size={16} /> }
   ];
 
@@ -3263,6 +3375,7 @@ export default function App() {
                   }}
                 />
               )}
+              {tab === 'balance-logs' && <BalanceQueryLogsPanel channel={selected} refreshKey={balanceLogsRefreshKey} />}
               {tab === 'alerts' && <AlertsPanel alerts={alerts} />}
             </section>
           </>

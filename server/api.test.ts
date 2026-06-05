@@ -221,6 +221,49 @@ describe('local API', () => {
     db.close();
   });
 
+  it('returns paginated channel balance query logs', async () => {
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const now = new Date('2026-06-05T08:00:00.000Z');
+    const channelId = Number(
+      db.prepare(`
+        INSERT INTO channels (
+          name, type, base_url, username, password, status, created_at, updated_at
+        ) VALUES ('s', 'sub2api', 'https://sub2api.example.com', 'u', 'p', 'active', ?, ?)
+      `).run(now.toISOString(), now.toISOString()).lastInsertRowid
+    );
+    for (let index = 0; index < 12; index += 1) {
+      const createdAt = new Date(now.getTime() + index * 60000).toISOString();
+      db.prepare(`
+        INSERT INTO balance_query_logs (
+          channel_id, status, balance, used_balance, unit, message, error, raw_json, created_at
+        ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
+      `).run(
+        channelId,
+        index % 2 === 0 ? 'success' : 'error',
+        index % 2 === 0 ? index : null,
+        index % 2 === 0 ? 'sub2api-balance' : null,
+        index % 2 === 0 ? '余额查询成功' : '余额查询失败',
+        index % 2 === 0 ? null : `error-${index}`,
+        JSON.stringify({ index }),
+        createdAt
+      );
+    }
+
+    const firstPage = await agent.get(`/api/channels/${channelId}/balance-query-logs`).expect(200);
+    const secondPage = await agent.get(`/api/channels/${channelId}/balance-query-logs?page=2`).expect(200);
+
+    expect(firstPage.body).toMatchObject({ total: 12, page: 1, page_size: 10, pages: 2 });
+    expect(firstPage.body.items).toHaveLength(10);
+    expect(firstPage.body.items[0]).toMatchObject({ status: 'error', error: 'error-11' });
+    expect(firstPage.body.items[9]).toMatchObject({ status: 'success', balance: 2 });
+    expect(secondPage.body).toMatchObject({ total: 12, page: 2, page_size: 10, pages: 2 });
+    expect(secondPage.body.items).toHaveLength(2);
+    db.close();
+  });
+
   it('rejects upstream login for new-api channels', async () => {
     const db = createDatabase(':memory:');
     const app = createApp(db, testConfig);

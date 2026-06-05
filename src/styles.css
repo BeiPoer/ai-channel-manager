@@ -1460,6 +1460,35 @@ select {
   color: var(--muted-strong);
 }
 
+.queryStatus {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.queryStatus.success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.queryStatus.error {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.balanceLogTable table {
+  min-width: 1120px;
+}
+
+.balanceLogError {
+  white-space: normal;
+  line-height: 1.45;
+}
+
 .switch {
   position: relative;
   width: 42px;

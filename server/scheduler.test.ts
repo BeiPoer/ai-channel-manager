@@ -170,6 +170,32 @@ describe('automation evaluation', () => {
     db.close();
   });
 
+  it('does not alert when channel sync fails during balance query', async () => {
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO channels (id, name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES (1, 's', 'sub2api', 'http://127.0.0.1:1', 'u', 'p', 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+      VALUES (1, 'low_balance', 1, 1, 99, 60, 0, ?, ?)
+    `).run(now, now);
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    syncSpy.mockRejectedValue(new Error('余额查询失败：profile.balance 缺失'));
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueTasks(db, mailer);
+
+    const alertCount = db.prepare('SELECT COUNT(*) AS count FROM alert_events').get() as { count: number };
+    const taskRow = db.prepare('SELECT last_run_at FROM automation_tasks WHERE channel_id = 1').get() as { last_run_at: string | null };
+    expect(alertCount.count).toBe(0);
+    expect(mailer).not.toHaveBeenCalled();
+    expect(taskRow.last_run_at).toBeTruthy();
+    syncSpy.mockRestore();
+    db.close();
+  });
+
   it('shares one channel sync across multiple due group tasks', async () => {
     const db = createDatabase(':memory:');
     const now = nowIso();

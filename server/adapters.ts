@@ -69,6 +69,18 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function requireFiniteNumber(value: unknown, fieldName: string, raw: unknown): number {
+  const parsed = finiteNumber(value);
+  if (parsed === null) throw new UpstreamError(`余额查询失败：${fieldName} 缺失或不是有效数字`, 502, raw);
+  return parsed;
+}
+
 function asPositiveNumber(value: unknown, fallback: number): number {
   const parsed = asNumber(value, fallback);
   return parsed > 0 ? parsed : fallback;
@@ -102,8 +114,15 @@ function newApiQuotaConversion(status: unknown): NewApiQuotaConversion {
   };
 }
 
-function convertNewApiQuota(value: unknown, conversion: NewApiQuotaConversion): number {
-  const quota = asNumber(value, 0);
+function convertNewApiQuota(value: number, conversion: NewApiQuotaConversion): number {
+  const quota = value;
+  if (conversion.displayType === 'TOKENS') return quota;
+  return (quota / conversion.quotaPerUnit) * conversion.rate;
+}
+
+function convertOptionalNewApiQuota(value: unknown, conversion: NewApiQuotaConversion): number | null {
+  const quota = finiteNumber(value);
+  if (quota === null) return null;
   if (conversion.displayType === 'TOKENS') return quota;
   return (quota / conversion.quotaPerUnit) * conversion.rate;
 }
@@ -429,18 +448,27 @@ async function fetchSub2apiTokens(db: DatabaseSync, channel: ChannelRecord): Pro
 }
 
 async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
-  const profile = await sub2apiRequest(db, channel, '/auth/me');
+  let profile: unknown;
+  let balance: number;
+  try {
+    profile = await sub2apiRequest(db, channel, '/auth/me');
+    const profileRecord = (profile || {}) as Record<string, unknown>;
+    balance = requireFiniteNumber(profileRecord.balance, 'profile.balance', profile);
+  } catch (error) {
+    recordBalanceQueryFailure(db, channel.id, error);
+    throw error;
+  }
+  const balanceSnapshot: SyncResult['balanceSnapshot'] = { balance, used_balance: null, unit: 'sub2api-balance', raw: profile };
+  recordBalanceQuerySuccess(db, channel.id, balanceSnapshot);
   const groups = await sub2apiRequest(db, channel, '/groups/available');
   const tokens = await fetchSub2apiTokens(db, channel);
   const subscriptions = {
     active: await sub2apiRequest(db, channel, '/subscriptions/active').catch((error) => ({ error: (error as Error).message })),
     summary: await sub2apiRequest(db, channel, '/subscriptions/summary').catch((error) => ({ error: (error as Error).message }))
   };
-  const profileRecord = (profile || {}) as Record<string, unknown>;
-  const balance = asNumber(profileRecord.balance, 0);
   return {
     profile,
-    balanceSnapshot: { balance, used_balance: null, unit: 'sub2api-balance', raw: profile },
+    balanceSnapshot,
     groups: Array.isArray(groups) ? groups : extractPage(groups).items,
     tokens: tokens.items,
     subscriptions,
@@ -476,14 +504,30 @@ async function fetchNewApiTokens(channel: ChannelRecord): Promise<{ items: unkno
   return { items: allItems, raw: rawPages };
 }
 
-async function syncNewApi(channel: ChannelRecord): Promise<SyncResult> {
-  const profile = await newApiRequest(channel, '/user/self');
-  const profileRecord = (profile || {}) as Record<string, unknown>;
-  if (String(profileRecord.id ?? channel.newapi_user_id) !== String(channel.newapi_user_id)) {
-    throw new UpstreamError('new-api userId 与访问令牌所属用户不一致', 400, profile);
+async function syncNewApi(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
+  let profile: unknown;
+  let quota: number;
+  try {
+    profile = await newApiRequest(channel, '/user/self');
+    const profileRecord = (profile || {}) as Record<string, unknown>;
+    if (String(profileRecord.id ?? channel.newapi_user_id) !== String(channel.newapi_user_id)) {
+      throw new UpstreamError('new-api userId 与访问令牌所属用户不一致', 400, profile);
+    }
+    quota = requireFiniteNumber(profileRecord.quota, 'profile.quota', profile);
+  } catch (error) {
+    recordBalanceQueryFailure(db, channel.id, error);
+    throw error;
   }
+  const profileRecord = (profile || {}) as Record<string, unknown>;
   const status = await newApiRequest(channel, '/status').catch(() => null);
   const conversion = newApiQuotaConversion(status);
+  const balanceSnapshot: SyncResult['balanceSnapshot'] = {
+    balance: convertNewApiQuota(quota, conversion),
+    used_balance: convertOptionalNewApiQuota(profileRecord.used_quota, conversion),
+    unit: `new-api-${conversion.unit}`,
+    raw: { profile, status, conversion }
+  };
+  recordBalanceQuerySuccess(db, channel.id, balanceSnapshot);
   const groupsPayload = await newApiRequest(channel, '/user/self/groups');
   const tokens = await fetchNewApiTokens(channel);
   const groups = Array.isArray(groupsPayload)
@@ -491,12 +535,7 @@ async function syncNewApi(channel: ChannelRecord): Promise<SyncResult> {
     : Object.entries((groupsPayload || {}) as Record<string, unknown>).map(([name, value]) => ({ name, ...(value && typeof value === 'object' ? value : { value }) }));
   return {
     profile,
-    balanceSnapshot: {
-      balance: convertNewApiQuota(profileRecord.quota, conversion),
-      used_balance: convertNewApiQuota(profileRecord.used_quota, conversion),
-      unit: `new-api-${conversion.unit}`,
-      raw: { profile, status, conversion }
-    },
+    balanceSnapshot,
     groups,
     tokens: tokens.items,
     raw: { profile, status, groups: groupsPayload, tokens: tokens.raw }
@@ -533,6 +572,34 @@ function cachedTokens(db: DatabaseSync, channelId: number): unknown[] {
     | { normalized_json: string }
     | undefined;
   return parseJson<unknown[]>(row?.normalized_json, []);
+}
+
+function recordBalanceQuerySuccess(db: DatabaseSync, channelId: number, snapshot: SyncResult['balanceSnapshot']): void {
+  db.prepare(`
+    INSERT INTO balance_query_logs (channel_id, status, balance, used_balance, unit, message, error, raw_json, created_at)
+    VALUES (?, 'success', ?, ?, ?, ?, NULL, ?, ?)
+  `).run(
+    channelId,
+    snapshot.balance,
+    snapshot.used_balance ?? null,
+    snapshot.unit,
+    '余额查询成功',
+    JSON.stringify(snapshot.raw ?? null),
+    nowIso()
+  );
+}
+
+function recordBalanceQueryFailure(db: DatabaseSync, channelId: number, error: unknown, raw: unknown = null): void {
+  db.prepare(`
+    INSERT INTO balance_query_logs (channel_id, status, balance, used_balance, unit, message, error, raw_json, created_at)
+    VALUES (?, 'error', NULL, NULL, NULL, ?, ?, ?, ?)
+  `).run(
+    channelId,
+    '余额查询失败',
+    error instanceof Error ? error.message : String(error || '余额查询失败'),
+    JSON.stringify(raw ?? (error instanceof UpstreamError ? error.details ?? null : null)),
+    nowIso()
+  );
 }
 
 function updateTokenCache(db: DatabaseSync, channelId: number, updatedToken: unknown): unknown[] {
@@ -720,7 +787,7 @@ export async function syncChannel(db: DatabaseSync, channelId: number): Promise<
   if (!channel) throw new UpstreamError('渠道不存在', 404);
   db.prepare('UPDATE channels SET status = ?, updated_at = ? WHERE id = ?').run('syncing', nowIso(), channel.id);
   try {
-    const result = channel.type === 'sub2api' ? await syncSub2api(db, channel) : await syncNewApi(channel);
+    const result = channel.type === 'sub2api' ? await syncSub2api(db, channel) : await syncNewApi(db, channel);
     persistSyncResult(db, channel, result);
     return result;
   } catch (error) {

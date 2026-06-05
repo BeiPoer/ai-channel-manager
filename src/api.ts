@@ -1,6 +1,7 @@
 import type {
   AlertEvent,
   AutomationTask,
+  BalanceQueryLog,
   Channel,
   EmailSettings,
   Overview,
@@ -65,6 +66,8 @@ export const api = {
   syncChannel: (id: number) => request<{ channel: Channel }>(`/api/channels/${id}/sync`, { method: 'POST' }),
   upstreamLoginUrl: (id: number) => `/api/channels/${id}/upstream-login`,
   overview: (id: number) => request<Overview>(`/api/channels/${id}/overview`),
+  balanceQueryLogs: (id: number, page = 1) =>
+    request<PaginatedResult<BalanceQueryLog>>(`/api/channels/${id}/balance-query-logs${queryString({ page })}`),
   groups: (id: number) => request<unknown[]>(`/api/channels/${id}/groups`),
   tokens: (id: number) => request<unknown[]>(`/api/channels/${id}/tokens`),
   tokenModels: (channelId: number, tokenId: number) => request<TokenModelsResult>(`/api/channels/${channelId}/tokens/${tokenId}/models`),
