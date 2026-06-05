@@ -1,0 +1,49 @@
+server/types.ts
+  s_d1672004d881ec::t_0d8ccee78a5871 57-71
+server/routes.ts
+  s_d1672004d881ec::t_80c64dec79aea5 63-67,307-322
+src/routing.ts
+  s_d1672004d881ec::t_646ce1bfec9250 1,11
+src/types.ts
+  s_d1672004d881ec::t_125473fd652d88 36-50
+src/App.tsx
+  s_d1672004d881ec::t_a1133ccf846a62 25,40
+  s_d1672004d881ec::t_177067dfe52326 1749-1854
+  s_d1672004d881ec::t_1b7195e196a83a 2954,3126,3130,3166,3378
+src/api.ts
+  s_d1672004d881ec::t_e7233dc808f048 4,69-70
+src/styles.css
+  s_d1672004d881ec::t_108dab695801ad 1463-1491
+server/db.ts
+  s_d1672004d881ec::t_8ca48d32b612d9 74-86
+server/adapters.ts
+  s_d1672004d881ec::t_ea1cd49580223d 461-462,471,524-530,538
+  s_d1672004d881ec::t_a459c08f20c9af 577-604
+  s_d1672004d881ec::t_334c3719a1d770 790
+  s_d1672004d881ec::t_295a6c6832d45e 507-519,521
+  s_d1672004d881ec::t_82d58dc9303225 117-118
+  s_d1672004d881ec::t_1648febf3dc11d 451-460
+  s_d1672004d881ec::t_6ef2b4ebd2c9f3 72-83,119-125
+server/api.test.ts
+  s_d1672004d881ec::t_72f5134bd5ae5d 224-266
+server/adapters.test.ts
+  s_d1672004d881ec::t_c39f693614a7aa 57,60-89,147,150-177
+server/scheduler.test.ts
+  s_d1672004d881ec::t_9a142640fef2c9 173-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b4b8daa0c85110354b4d52cec1f2cb37db850a76",
+  "prompts": {},
+  "sessions": {
+    "s_d1672004d881ec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e96bb-dd7f-7c41-a4cd-a57d0d3ea18a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "astorm-z <forczc@foxmail.com>"
+    }
+  }
+}
