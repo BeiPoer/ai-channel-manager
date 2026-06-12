@@ -1,0 +1,23 @@
+src/styles.css
+  s_6b5ab26ea1f5a3::t_e43e95de115767 1111-1164
+  s_6b5ab26ea1f5a3::t_b78e7a10aae88e 1196-1201
+src/App.tsx
+  s_6b5ab26ea1f5a3::t_c67f53d827496f 491-585,1346,1430,1442,1466-1467
+  s_6b5ab26ea1f5a3::t_c32f5bd5e61c85 437-441,1104,1109,1114-1116,1124,1656
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "6621f75c88e053122403fbe8738ad9dd80eed34e",
+  "prompts": {},
+  "sessions": {
+    "s_6b5ab26ea1f5a3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb97d-b065-7d70-87c7-dd495d865873",
+        "model": "gpt-5.5"
+      },
+      "human_author": "astorm-z <forczc@foxmail.com>"
+    }
+  }
+}
