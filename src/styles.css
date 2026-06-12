@@ -1108,6 +1108,60 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+.groupCacheTable table {
+  min-width: 760px;
+}
+
+.groupCacheTable .jsonColumn-id {
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+}
+
+.groupCacheTable .jsonColumn-name {
+  width: 230px;
+  min-width: 230px;
+}
+
+.groupCacheTable .jsonColumn-ratio,
+.groupCacheTable .jsonColumn-rate,
+.groupCacheTable .jsonColumn-multiplier,
+.groupCacheTable .jsonColumn-rate_multiplier,
+.groupCacheTable .jsonColumn-ratemultiplier,
+.groupCacheTable .jsonColumn-group_ratio,
+.groupCacheTable .jsonColumn-model_ratio {
+  width: 64px;
+  min-width: 64px;
+  max-width: 64px;
+}
+
+.groupCacheTable .jsonColumn-is_exclusive {
+  width: 76px;
+  min-width: 76px;
+  max-width: 76px;
+}
+
+.groupCacheTable .jsonColumn-status {
+  width: 66px;
+  min-width: 66px;
+  max-width: 66px;
+}
+
+.groupCacheTable .jsonColumn-subscription_type {
+  width: 88px;
+  min-width: 88px;
+  max-width: 88px;
+}
+
+.groupCacheTable td.jsonColumn-name {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
 .tokenTableStack {
   display: grid;
   gap: 10px;
@@ -1137,6 +1191,12 @@ tr:last-child td {
   width: 196px;
   min-width: 196px;
   max-width: 196px;
+}
+
+.tokenRatioColumn {
+  width: 72px;
+  min-width: 72px;
+  max-width: 72px;
 }
 
 .tokenModelsColumn {

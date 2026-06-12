@@ -434,6 +434,11 @@ function displayValue(column: string, value: unknown): string {
   return valuePreview(value);
 }
 
+function tableColumnClass(column: string): string {
+  const normalized = column.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase();
+  return normalized ? `jsonColumn jsonColumn-${normalized}` : 'jsonColumn';
+}
+
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -481,6 +486,101 @@ function groupIdFrom(row: Record<string, unknown>): string {
     if (groupId !== null && groupId !== undefined && String(groupId).trim() !== '') return String(groupId);
   }
   return '';
+}
+
+function stringIdentifier(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function addIdentifier(identifiers: Set<string>, value: unknown) {
+  const identifier = stringIdentifier(value);
+  if (identifier) identifiers.add(identifier);
+}
+
+function collectGroupIdentifiers(value: unknown, identifiers = new Set<string>()): Set<string> {
+  if (!isRecord(value)) {
+    addIdentifier(identifiers, value);
+    return identifiers;
+  }
+  const fields = [
+    'id',
+    'ID',
+    'group_id',
+    'groupId',
+    'groupID',
+    'name',
+    'Name',
+    'group',
+    'Group',
+    'key',
+    'code',
+    'group_name',
+    'groupName',
+    'display_name',
+    'displayName',
+    'title'
+  ];
+  for (const field of fields) {
+    const fieldValue = value[field];
+    if (isRecord(fieldValue)) {
+      collectGroupIdentifiers(fieldValue, identifiers);
+    } else {
+      addIdentifier(identifiers, fieldValue);
+    }
+  }
+  return identifiers;
+}
+
+function tokenGroupIdentifiers(row: Record<string, unknown>, channelType: ChannelType): Set<string> {
+  const identifiers = new Set<string>();
+  for (const field of ['group_id', 'groupId', 'groupID', 'group_name', 'groupName']) {
+    addIdentifier(identifiers, row[field]);
+  }
+  const group = row.group ?? row.Group;
+  if (isRecord(group)) {
+    collectGroupIdentifiers(group, identifiers);
+  } else {
+    addIdentifier(identifiers, group);
+    if (channelType === 'newapi' && group !== undefined && group !== null && String(group).trim() === '') {
+      identifiers.add('default');
+    }
+  }
+  return identifiers;
+}
+
+function groupRatioFrom(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (!isRecord(value)) return null;
+  const fields = ['ratio', 'rate', 'multiplier', 'rate_multiplier', 'rateMultiplier', 'group_ratio', 'model_ratio', '倍率', 'value'];
+  for (const field of fields) {
+    const fieldValue = value[field];
+    const parsed = typeof fieldValue === 'number' ? fieldValue : typeof fieldValue === 'string' ? Number(fieldValue) : NaN;
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function groupRatioLookup(groups: unknown[]): Map<string, number> {
+  const ratios = new Map<string, number>();
+  for (const group of asRows(groups)) {
+    const ratio = groupRatioFrom(group);
+    if (ratio === null) continue;
+    for (const identifier of collectGroupIdentifiers(group)) {
+      ratios.set(identifier, ratio);
+    }
+  }
+  return ratios;
+}
+
+function tokenGroupRatioLabel(channelType: ChannelType, row: Record<string, unknown>, ratios: Map<string, number>): string {
+  for (const identifier of tokenGroupIdentifiers(row, channelType)) {
+    const ratio = ratios.get(identifier);
+    if (ratio !== undefined) return formatNumber(ratio);
+  }
+  const embeddedRatio = groupRatioFrom(row.group ?? row.Group);
+  return embeddedRatio === null ? '-' : formatNumber(embeddedRatio);
 }
 
 function appendUniqueOption(options: GroupOption[], option: GroupOption) {
@@ -1001,17 +1101,19 @@ function EmailModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function JsonTable({ data, emptyText = '暂无数据' }: { data: unknown; emptyText?: string }) {
+function JsonTable({ data, emptyText = '暂无数据', className = '' }: { data: unknown; emptyText?: string; className?: string }) {
   const rows = asRows(data);
   const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).slice(0, 8);
   if (!rows.length) return <div className="emptyState">{emptyText}</div>;
   return (
-    <div className="tableWrap">
+    <div className={`tableWrap ${className}`}>
       <table>
         <thead>
           <tr>
             {columns.map((column) => (
-              <th key={column}>{columnLabel(column)}</th>
+              <th key={column} className={tableColumnClass(column)}>
+                {columnLabel(column)}
+              </th>
             ))}
           </tr>
         </thead>
@@ -1019,7 +1121,7 @@ function JsonTable({ data, emptyText = '暂无数据' }: { data: unknown; emptyT
           {rows.map((row, index) => (
             <tr key={index}>
               {columns.map((column) => (
-                <td key={column} title={valuePreview(row[column])}>
+                <td key={column} className={tableColumnClass(column)} title={valuePreview(row[column])}>
                   {displayValue(column, row[column])}
                 </td>
               ))}
@@ -1241,6 +1343,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
   const leadingColumns = columns.slice(0, 4);
   const trailingColumns = columns.slice(4);
   const options = tokenGroupOptions(overview, rows);
+  const ratios = groupRatioLookup(overview.groups);
   const [updatingTokenId, setUpdatingTokenId] = useState<number | null>(null);
   const [modelsState, setModelsState] = useState<{
     row: Record<string, unknown>;
@@ -1324,6 +1427,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
                 <th key={column}>{columnLabel(column)}</th>
               ))}
               <th className="tokenGroupColumn">分组</th>
+              <th className="tokenRatioColumn">倍率</th>
               <th className="tokenModelsColumn">模型</th>
               {trailingColumns.map((column) => (
                 <th key={column}>{columnLabel(column)}</th>
@@ -1335,6 +1439,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
               const tokenId = tokenIdOf(row);
               const currentValue = currentTokenGroupValue(overview.channel.type, row);
               const disabled = !tokenId || !options.length || updatingTokenId === tokenId;
+              const ratioLabel = tokenGroupRatioLabel(overview.channel.type, row, ratios);
               const displayedOptions = currentValue
                 ? appendUniqueOption(options, { value: currentValue, label: currentValue })
                 : options;
@@ -1357,6 +1462,9 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
                         </option>
                       ))}
                     </select>
+                  </td>
+                  <td className="tokenRatioColumn" title={ratioLabel}>
+                    {ratioLabel}
                   </td>
                   <td className="tokenModelsColumn">
                     <button
@@ -1545,7 +1653,7 @@ function OverviewPanel({ overview, onOverviewChanged }: { overview: Overview; on
 
       <div className="overviewDetails">
         <DataSection title="分组" description="同步缓存" icon={<Database size={17} />} right={<span className="dataPill">{dataCount.groups} 项</span>}>
-          <JsonTable data={overview.groups} emptyText="暂无分组缓存" />
+          <JsonTable data={overview.groups} emptyText="暂无分组缓存" className="groupCacheTable" />
         </DataSection>
         <DataSection title="令牌" description="同步缓存" icon={<KeyRound size={17} />} right={<span className="dataPill">{dataCount.tokens} 项</span>}>
           <TokenTable overview={overview} onTokensChanged={(tokens) => onOverviewChanged({ ...overview, tokens })} />
