@@ -587,4 +587,141 @@ describe('local API', () => {
     expect(taskCount.count).toBe(0);
     db.close();
   });
+
+  it('manages owned-site upstream monitor configs and run history', async () => {
+    const testBodies: unknown[] = [];
+    const attemptsByModel = new Map<string, number>();
+    const baseUrl = await startOwnedSub2apiMock((req, res, url) => {
+      if (req.headers['x-api-key'] !== 'admin-key') {
+        res.writeHead(401);
+        res.end(JSON.stringify({ code: 401, message: 'bad admin key' }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/groups/all') {
+        res.end(JSON.stringify({ code: 0, data: [{ id: 9, name: 'vip', platform: 'openai', status: 'active' }] }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/accounts') {
+        res.end(JSON.stringify({
+          code: 0,
+          data: {
+            items: [
+              { id: 22, name: 'openai-key', platform: 'openai', type: 'apikey', status: 'active', group_ids: [url.searchParams.get('group')] },
+              { id: 23, name: 'claude-key', platform: 'anthropic', type: 'apikey', status: 'active', group_ids: [url.searchParams.get('group')] },
+              { id: 24, name: 'oauth', platform: 'openai', type: 'oauth', status: 'active', group_ids: [url.searchParams.get('group')] },
+              { id: 25, name: 'inactive', platform: 'openai', type: 'apikey', status: 'inactive', group_ids: [url.searchParams.get('group')] },
+              { id: 26, name: 'gemini-key', platform: 'gemini', type: 'apikey', status: 'active', group_ids: [url.searchParams.get('group')] }
+            ],
+            total: 5,
+            page: 1,
+            page_size: 1000,
+            pages: 1
+          }
+        }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/accounts/22') {
+        res.end(JSON.stringify({ code: 0, data: { id: 22, name: 'openai-key', platform: 'openai', type: 'apikey', status: 'active', group_ids: ['9'] } }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/accounts/22/models') {
+        res.end(JSON.stringify({ code: 0, data: [{ id: 'gpt-4o' }, { id: 'gpt-4.1-mini' }, { id: 'gpt-image-1' }, { id: 'codex-auto-review' }] }));
+        return true;
+      }
+      if (url.pathname === '/api/v1/admin/accounts/22/test') {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+        });
+        req.on('end', () => {
+          const parsedBody = JSON.parse(body || '{}') as { model_id?: string };
+          testBodies.push(parsedBody);
+          const modelId = parsedBody.model_id || '';
+          const attempt = (attemptsByModel.get(modelId) || 0) + 1;
+          attemptsByModel.set(modelId, attempt);
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          if (modelId === 'gpt-4.1-mini' && attempt === 1) {
+            res.end('data: {"type":"error","success":false,"message":"first failed"}\n\n');
+            return;
+          }
+          res.end('data: {"type":"test_complete","success":true,"message":"ok"}\n\n');
+        });
+        return true;
+      }
+      return false;
+    });
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const created = await agent
+      .post('/api/owned-sites')
+      .send({ type: 'sub2api', base_url: baseUrl, name: 'owned', admin_api_key: 'admin-key' })
+      .expect(201);
+
+    const list = await agent.get(`/api/owned-sites/${created.body.id}/upstream/accounts?group=9`).expect(200);
+    expect(list.body).toHaveLength(2);
+    expect(list.body.map((item: { account: { id: string } }) => item.account.id)).toEqual(['22', '23']);
+    expect(list.body[0].group_monitor.enabled).toBe(false);
+    expect(list.body[0].monitor.interval_minutes).toBe(10);
+    expect(list.body[0].monitor.pause_start_time).toBe('01:00');
+    expect(list.body[0].monitor.pause_end_time).toBe('08:00');
+    expect(list.body[0].monitor.skip_model_patterns).toEqual(['gpt-image-*', 'codex-auto-review']);
+    const openaiBeforeRun = list.body.find((item: { account: { id: string } }) => item.account.id === '22');
+    expect(openaiBeforeRun.model_timelines.map((item: { model: string }) => item.model)).toEqual(['gpt-4o', 'gpt-4.1-mini']);
+    expect(openaiBeforeRun.model_timelines[0].timeline).toHaveLength(12);
+    expect(openaiBeforeRun.model_timelines[0].timeline[0].bucket_minutes).toBe(10);
+
+    const groupSaved = await agent
+      .put(`/api/owned-sites/${created.body.id}/upstream/groups/9/monitor`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(groupSaved.body).toMatchObject({ group_id: '9', group_name: 'vip', enabled: true });
+
+    const alertSetting = await agent.get(`/api/owned-sites/${created.body.id}/upstream/alert-setting`).expect(200);
+    expect(alertSetting.body).toMatchObject({ site_id: created.body.id, enabled: false });
+    const savedAlertSetting = await agent
+      .put(`/api/owned-sites/${created.body.id}/upstream/alert-setting`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(savedAlertSetting.body).toMatchObject({ site_id: created.body.id, enabled: true });
+
+    const saved = await agent
+      .put(`/api/owned-sites/${created.body.id}/upstream/accounts/22/monitor`)
+      .send({ interval_minutes: 5, retry_count: 2, pause_start_time: '23:30', pause_end_time: '6:05', skip_model_patterns: 'gpt-image-*' })
+      .expect(200);
+    expect(saved.body).toMatchObject({
+      interval_minutes: 5,
+      retry_count: 2,
+      pause_start_time: '23:30',
+      pause_end_time: '06:05',
+      skip_model_patterns: ['gpt-image-*']
+    });
+
+    const run = await agent.post(`/api/owned-sites/${created.body.id}/upstream/accounts/22/monitor/run`).expect(200);
+    expect(run.body.status).toBe('partial');
+    expect(run.body.tested_models).toEqual(['gpt-4o', 'gpt-4.1-mini']);
+    expect(run.body.skipped_models).toEqual(['gpt-image-1', 'codex-auto-review']);
+    expect(testBodies).toEqual([{ model_id: 'gpt-4o' }, { model_id: 'gpt-4.1-mini' }, { model_id: 'gpt-4.1-mini' }]);
+    expect(run.body.results.find((item: { model: string }) => item.model === 'gpt-4.1-mini')).toMatchObject({
+      status: 'partial',
+      attempt_count: 2,
+      success_count: 1,
+      failure_count: 1
+    });
+
+    const afterRun = await agent.get(`/api/owned-sites/${created.body.id}/upstream/accounts?group=9`).expect(200);
+    const openai = afterRun.body.find((item: { account: { id: string } }) => item.account.id === '22');
+    expect(openai.monitor.last_status).toBe('partial');
+    expect(openai.latest_result.status).toBe('partial');
+    expect(openai.model_timelines).toHaveLength(2);
+    expect(openai.model_timelines[0].model).toBe('gpt-4o');
+    expect(openai.model_timelines[0].timeline).toHaveLength(24);
+    expect(openai.model_timelines[0].timeline[0].bucket_minutes).toBe(5);
+    expect(openai.model_timelines[0].timeline.some((point: { status: string }) => point.status === 'success')).toBe(true);
+    expect(openai.model_timelines[1].model).toBe('gpt-4.1-mini');
+    const partialPoint = openai.model_timelines[1].timeline.find((point: { status: string }) => point.status === 'partial');
+    expect(partialPoint).toMatchObject({ attempt_count: 2, success_count: 1, failure_count: 1 });
+    db.close();
+  });
 });

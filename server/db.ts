@@ -188,9 +188,87 @@ export function migrate(db: DatabaseSync): void {
       email_error TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS owned_site_upstream_monitors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL,
+      account_name TEXT,
+      account_platform TEXT,
+      account_type TEXT,
+      group_ids_json TEXT NOT NULL DEFAULT '[]',
+      enabled INTEGER NOT NULL DEFAULT 0,
+      interval_minutes INTEGER NOT NULL DEFAULT 10,
+      retry_count INTEGER NOT NULL DEFAULT 2,
+      pause_start_time TEXT NOT NULL DEFAULT '01:00',
+      pause_end_time TEXT NOT NULL DEFAULT '08:00',
+      skip_model_patterns_json TEXT NOT NULL DEFAULT '["gpt-image-*","codex-auto-review"]',
+      last_run_at TEXT,
+      last_status TEXT CHECK (last_status IN ('success', 'failed', 'partial', 'skipped')),
+      last_error TEXT,
+      last_latency_ms INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(site_id, account_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS owned_site_upstream_group_monitors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      group_id TEXT NOT NULL,
+      group_name TEXT,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(site_id, group_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS owned_site_upstream_alert_settings (
+      site_id INTEGER PRIMARY KEY REFERENCES owned_sites(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS owned_site_upstream_monitor_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      monitor_id INTEGER REFERENCES owned_site_upstream_monitors(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL,
+      account_name TEXT,
+      model TEXT,
+      status TEXT NOT NULL CHECK (status IN ('success', 'failed', 'partial', 'skipped')),
+      attempt_count INTEGER,
+      success_count INTEGER,
+      failure_count INTEGER,
+      latency_ms INTEGER,
+      message TEXT NOT NULL DEFAULT '',
+      raw_json TEXT,
+      checked_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_monitors_site
+      ON owned_site_upstream_monitors(site_id);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_group_monitors_site
+      ON owned_site_upstream_group_monitors(site_id);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_alert_settings_site
+      ON owned_site_upstream_alert_settings(site_id);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_results_account_time
+      ON owned_site_upstream_monitor_results(site_id, account_id, checked_at);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_results_monitor_time
+      ON owned_site_upstream_monitor_results(monitor_id, checked_at);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_alert_events_upstream_dedupe
+      ON owned_site_alert_events(site_id, type, account_id, after_status, created_at);
   `);
   migrateChannelTypes(db);
   migrateAutomationTaskTypes(db);
+  migrateOwnedSiteUpstreamMonitorSchema(db);
+  migrateOwnedSiteUpstreamMonitorDefaults(db);
   seedExistingGroupTaskState(db);
 }
 
@@ -269,6 +347,140 @@ function migrateAutomationTaskTypes(db: DatabaseSync): void {
     COMMIT;
     PRAGMA foreign_keys = ON;
   `);
+}
+
+function tableSql(db: DatabaseSync, tableName: string): string {
+  const table = db.prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?').get('table', tableName) as { sql: string } | undefined;
+  return table?.sql || '';
+}
+
+function columnExists(db: DatabaseSync, tableName: string, columnName: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).some((column) => column.name === columnName);
+}
+
+function migrateOwnedSiteUpstreamMonitorSchema(db: DatabaseSync): void {
+  if (!columnExists(db, 'owned_site_upstream_monitors', 'retry_count')) {
+    db.prepare('ALTER TABLE owned_site_upstream_monitors ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 2').run();
+  }
+  if (!columnExists(db, 'owned_site_upstream_monitors', 'pause_start_time')) {
+    db.prepare("ALTER TABLE owned_site_upstream_monitors ADD COLUMN pause_start_time TEXT NOT NULL DEFAULT '01:00'").run();
+  }
+  if (!columnExists(db, 'owned_site_upstream_monitors', 'pause_end_time')) {
+    db.prepare("ALTER TABLE owned_site_upstream_monitors ADD COLUMN pause_end_time TEXT NOT NULL DEFAULT '08:00'").run();
+  }
+  for (const column of ['attempt_count', 'success_count', 'failure_count']) {
+    if (!columnExists(db, 'owned_site_upstream_monitor_results', column)) {
+      db.prepare(`ALTER TABLE owned_site_upstream_monitor_results ADD COLUMN ${column} INTEGER`).run();
+    }
+  }
+
+  if (!tableSql(db, 'owned_site_upstream_monitors').includes("'partial'")) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+      CREATE TABLE owned_site_upstream_monitors_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+        account_id TEXT NOT NULL,
+        account_name TEXT,
+        account_platform TEXT,
+        account_type TEXT,
+        group_ids_json TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        interval_minutes INTEGER NOT NULL DEFAULT 10,
+        retry_count INTEGER NOT NULL DEFAULT 2,
+        pause_start_time TEXT NOT NULL DEFAULT '01:00',
+        pause_end_time TEXT NOT NULL DEFAULT '08:00',
+        skip_model_patterns_json TEXT NOT NULL DEFAULT '["gpt-image-*","codex-auto-review"]',
+        last_run_at TEXT,
+        last_status TEXT CHECK (last_status IN ('success', 'failed', 'partial', 'skipped')),
+        last_error TEXT,
+        last_latency_ms INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(site_id, account_id)
+      );
+      INSERT INTO owned_site_upstream_monitors_new (
+        id, site_id, account_id, account_name, account_platform, account_type, group_ids_json,
+        enabled, interval_minutes, retry_count, pause_start_time, pause_end_time, skip_model_patterns_json,
+        last_run_at, last_status, last_error, last_latency_ms, created_at, updated_at
+      )
+      SELECT
+        id, site_id, account_id, account_name, account_platform, account_type, group_ids_json,
+        enabled, interval_minutes, retry_count, pause_start_time, pause_end_time, skip_model_patterns_json,
+        last_run_at, last_status, last_error, last_latency_ms, created_at, updated_at
+      FROM owned_site_upstream_monitors;
+      DROP TABLE owned_site_upstream_monitors;
+      ALTER TABLE owned_site_upstream_monitors_new RENAME TO owned_site_upstream_monitors;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
+  if (!tableSql(db, 'owned_site_upstream_monitor_results').includes("'partial'")) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+      CREATE TABLE owned_site_upstream_monitor_results_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+        monitor_id INTEGER REFERENCES owned_site_upstream_monitors(id) ON DELETE CASCADE,
+        account_id TEXT NOT NULL,
+        account_name TEXT,
+        model TEXT,
+        status TEXT NOT NULL CHECK (status IN ('success', 'failed', 'partial', 'skipped')),
+        attempt_count INTEGER,
+        success_count INTEGER,
+        failure_count INTEGER,
+        latency_ms INTEGER,
+        message TEXT NOT NULL DEFAULT '',
+        raw_json TEXT,
+        checked_at TEXT NOT NULL
+      );
+      INSERT INTO owned_site_upstream_monitor_results_new (
+        id, site_id, monitor_id, account_id, account_name, model, status,
+        attempt_count, success_count, failure_count, latency_ms, message, raw_json, checked_at
+      )
+      SELECT
+        id, site_id, monitor_id, account_id, account_name, model, status,
+        attempt_count, success_count, failure_count, latency_ms, message, raw_json, checked_at
+      FROM owned_site_upstream_monitor_results;
+      DROP TABLE owned_site_upstream_monitor_results;
+      ALTER TABLE owned_site_upstream_monitor_results_new RENAME TO owned_site_upstream_monitor_results;
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_monitors_site
+      ON owned_site_upstream_monitors(site_id);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_results_account_time
+      ON owned_site_upstream_monitor_results(site_id, account_id, checked_at);
+
+    CREATE INDEX IF NOT EXISTS idx_owned_site_upstream_results_monitor_time
+      ON owned_site_upstream_monitor_results(monitor_id, checked_at);
+  `);
+}
+
+function migrateOwnedSiteUpstreamMonitorDefaults(db: DatabaseSync): void {
+  db.prepare(`
+    UPDATE owned_site_upstream_monitors
+    SET interval_minutes = 10,
+        skip_model_patterns_json = '["gpt-image-*","codex-auto-review"]'
+    WHERE interval_minutes = 30
+      AND skip_model_patterns_json = '[]'
+      AND last_run_at IS NULL
+      AND last_status IS NULL
+  `).run();
+  db.prepare(`
+    UPDATE owned_site_upstream_monitors
+    SET skip_model_patterns_json = '["gpt-image-*","codex-auto-review"]'
+    WHERE skip_model_patterns_json = '["gpt-image-*"]'
+      AND last_run_at IS NULL
+      AND last_status IS NULL
+  `).run();
 }
 
 function seedExistingGroupTaskState(db: DatabaseSync): void {

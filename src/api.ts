@@ -10,6 +10,11 @@ import type {
   OwnedSiteAlertEvent,
   OwnedSiteAutomationTask,
   OwnedSiteGroup,
+  OwnedSiteUpstreamAccount,
+  OwnedSiteUpstreamAlertSetting,
+  OwnedSiteUpstreamGroupMonitor,
+  OwnedSiteUpstreamMonitor,
+  OwnedSiteUpstreamRunResult,
   PaginatedResult,
   TokenModelsResult
 } from './types';
@@ -95,6 +100,31 @@ export const api = {
   ownedSiteGroups: (id: number) => request<OwnedSiteGroup[]>(`/api/owned-sites/${id}/groups`),
   ownedSiteAccounts: (id: number, params?: Record<string, string | number | boolean | null | undefined>) =>
     request<PaginatedResult<OwnedSiteAccount>>(`/api/owned-sites/${id}/accounts${queryString(params)}`),
+  ownedSiteUpstreamAccounts: (id: number, group?: string) =>
+    request<OwnedSiteUpstreamAccount[]>(`/api/owned-sites/${id}/upstream/accounts${queryString({ group })}`),
+  ownedSiteUpstreamAlertSetting: (id: number) =>
+    request<OwnedSiteUpstreamAlertSetting>(`/api/owned-sites/${id}/upstream/alert-setting`),
+  updateOwnedSiteUpstreamAlertSetting: (id: number, payload: Record<string, unknown>) =>
+    request<OwnedSiteUpstreamAlertSetting>(`/api/owned-sites/${id}/upstream/alert-setting`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    }),
+  ownedSiteUpstreamGroupMonitor: (siteId: number, groupId: string) =>
+    request<OwnedSiteUpstreamGroupMonitor>(`/api/owned-sites/${siteId}/upstream/groups/${encodeURIComponent(groupId)}/monitor`),
+  updateOwnedSiteUpstreamGroupMonitor: (siteId: number, groupId: string, payload: Record<string, unknown>) =>
+    request<OwnedSiteUpstreamGroupMonitor>(`/api/owned-sites/${siteId}/upstream/groups/${encodeURIComponent(groupId)}/monitor`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    }),
+  ownedSiteUpstreamMonitor: (siteId: number, accountId: string) =>
+    request<OwnedSiteUpstreamMonitor>(`/api/owned-sites/${siteId}/upstream/accounts/${accountId}/monitor`),
+  updateOwnedSiteUpstreamMonitor: (siteId: number, accountId: string, payload: Record<string, unknown>) =>
+    request<OwnedSiteUpstreamMonitor>(`/api/owned-sites/${siteId}/upstream/accounts/${accountId}/monitor`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    }),
+  runOwnedSiteUpstreamMonitor: (siteId: number, accountId: string) =>
+    request<OwnedSiteUpstreamRunResult>(`/api/owned-sites/${siteId}/upstream/accounts/${accountId}/monitor/run`, { method: 'POST' }),
   ownedSiteTasks: (id: number) => request<OwnedSiteAutomationTask[]>(`/api/owned-sites/${id}/tasks`),
   createOwnedSiteTask: (id: number, payload: Record<string, unknown>) =>
     request<OwnedSiteAutomationTask>(`/api/owned-sites/${id}/tasks`, { method: 'POST', body: JSON.stringify(payload) }),

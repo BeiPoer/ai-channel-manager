@@ -3,7 +3,7 @@ export type ChannelStatus = 'active' | 'error' | 'syncing';
 export type TaskType = 'low_balance' | 'burn_rate' | 'group_added' | 'group_removed' | 'group_ratio_changed';
 export type OwnedSiteType = 'sub2api';
 export type OwnedSiteStatus = 'active' | 'error' | 'syncing';
-export type OwnedSiteTaskType = 'account_error';
+export type OwnedSiteTaskType = 'account_error' | 'upstream_monitor_failed';
 export type OwnedSiteTaskTargetType = 'account' | 'group';
 
 export interface Channel {
@@ -154,6 +154,111 @@ export interface OwnedSiteAutomationTask {
   last_alert_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type OwnedSiteUpstreamMonitorStatus = 'success' | 'failed' | 'partial' | 'skipped';
+export type OwnedSiteUpstreamTimelineStatus = OwnedSiteUpstreamMonitorStatus | 'empty';
+
+export interface OwnedSiteUpstreamMonitor {
+  id: number | null;
+  site_id: number;
+  account_id: string;
+  account_name: string | null;
+  account_platform: string | null;
+  account_type: string | null;
+  group_ids: string[];
+  enabled: boolean;
+  interval_minutes: number;
+  retry_count: number;
+  pause_start_time: string;
+  pause_end_time: string;
+  skip_model_patterns: string[];
+  last_run_at: string | null;
+  last_status: OwnedSiteUpstreamMonitorStatus | null;
+  last_error: string | null;
+  last_latency_ms: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface OwnedSiteUpstreamGroupMonitor {
+  id: number | null;
+  site_id: number;
+  group_id: string;
+  group_name: string | null;
+  enabled: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface OwnedSiteUpstreamAlertSetting {
+  site_id: number;
+  enabled: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface OwnedSiteUpstreamTimelinePoint {
+  minute: string;
+  bucket_minutes: number;
+  status: OwnedSiteUpstreamTimelineStatus;
+  model: string | null;
+  attempt_count: number | null;
+  success_count: number | null;
+  failure_count: number | null;
+  latency_ms: number | null;
+  message: string;
+  checked_at: string | null;
+}
+
+export interface OwnedSiteUpstreamResult {
+  id: number;
+  site_id: number;
+  monitor_id: number | null;
+  account_id: string;
+  account_name: string | null;
+  model: string | null;
+  status: OwnedSiteUpstreamMonitorStatus;
+  attempt_count: number | null;
+  success_count: number | null;
+  failure_count: number | null;
+  latency_ms: number | null;
+  message: string;
+  raw_json: string | null;
+  checked_at: string;
+}
+
+export interface OwnedSiteUpstreamModelTimeline {
+  model: string;
+  latest_result: OwnedSiteUpstreamResult | null;
+  timeline: OwnedSiteUpstreamTimelinePoint[];
+}
+
+export interface OwnedSiteUpstreamAccount {
+  account: OwnedSiteAccount;
+  monitor: OwnedSiteUpstreamMonitor;
+  group_monitor: OwnedSiteUpstreamGroupMonitor;
+  latest_result: OwnedSiteUpstreamResult | null;
+  timeline: OwnedSiteUpstreamTimelinePoint[];
+  model_timelines: OwnedSiteUpstreamModelTimeline[];
+  model_list_error: string | null;
+}
+
+export interface OwnedSiteUpstreamRunResult {
+  monitor: OwnedSiteUpstreamMonitor;
+  status: OwnedSiteUpstreamMonitorStatus;
+  models: string[];
+  tested_models: string[];
+  skipped_models: string[];
+  results: Array<{
+    model: string | null;
+    status: OwnedSiteUpstreamMonitorStatus;
+    attempt_count: number | null;
+    success_count: number | null;
+    failure_count: number | null;
+    latency_ms: number | null;
+    message: string;
+  }>;
 }
 
 export interface OwnedSiteAlertEvent {

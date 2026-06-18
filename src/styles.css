@@ -1563,12 +1563,14 @@ select {
   width: 42px;
   height: 24px;
   flex: 0 0 42px;
+  cursor: pointer;
 }
 
 .switch input {
   position: absolute;
   inset: 0;
   opacity: 0;
+  cursor: inherit;
 }
 
 .switch span {
@@ -1601,6 +1603,11 @@ select {
 
 .switch input:checked + span::after {
   transform: translateX(18px);
+}
+
+.switch.disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .modalBackdrop {
@@ -1838,8 +1845,376 @@ select {
   height: 38px;
 }
 
+.timeRangeInputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.timeRangeInputs span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.upstreamAlertBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.upstreamAlertBar > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.upstreamAlertBar strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.upstreamAlertBar span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .ownedAccountTable table {
   min-width: 1160px;
+}
+
+.upstreamLayout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.upstreamGroupRail,
+.upstreamAccounts {
+  min-width: 0;
+}
+
+.upstreamGroupRail {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 10px;
+}
+
+.upstreamRailHeader,
+.upstreamAccountsHeader,
+.upstreamAccountTitle,
+.upstreamAccountActions,
+.switchRow {
+  display: flex;
+  align-items: center;
+}
+
+.upstreamRailHeader,
+.upstreamAccountsHeader,
+.switchRow {
+  justify-content: space-between;
+}
+
+.upstreamRailHeader {
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.upstreamRailHeader strong,
+.upstreamAccountsHeader strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.upstreamRailHeader span,
+.upstreamAccountsHeader span,
+.upstreamAccountMeta,
+.switchRow small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.upstreamGroupList {
+  display: grid;
+  gap: 6px;
+  max-height: 560px;
+  overflow: auto;
+}
+
+.upstreamGroupItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 10px;
+}
+
+.upstreamGroupItem:hover {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.upstreamGroupItem.selected {
+  border-color: #bfdbfe;
+  background: var(--primary-soft);
+}
+
+.upstreamGroupSelect {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.upstreamGroupSelect small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upstreamGroupName {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upstreamGroupMeta {
+  display: flex;
+  min-width: 0;
+  grid-column: 1 / 2;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.upstreamGroupSelect small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.upstreamGroupInlineSwitch {
+  grid-column: 2 / 3;
+  grid-row: 1 / 3;
+  justify-self: end;
+}
+
+.upstreamAccountsHeader {
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.upstreamAccountsHeader div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.upstreamHeaderPills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.upstreamAccountList {
+  display: grid;
+  gap: 10px;
+}
+
+.upstreamAccountItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 13px;
+}
+
+.upstreamAccountMain {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.upstreamAccountTitle {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.upstreamAccountTitle strong {
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upstreamAccountMeta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.upstreamAccountMeta span {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upstreamAccountError {
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.upstreamMonitorState {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.upstreamMonitorState.success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.upstreamMonitorState.failed {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.upstreamMonitorState.partial {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.upstreamMonitorState.skipped {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.upstreamMonitorState.empty {
+  background: var(--surface-muted);
+  color: var(--muted-strong);
+}
+
+.upstreamPipeline {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(4px, 1fr);
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  align-items: stretch;
+}
+
+.upstreamModelPipelines {
+  display: grid;
+  gap: 8px;
+}
+
+.upstreamModelPipeline {
+  display: grid;
+  grid-template-columns: minmax(130px, 220px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.upstreamModelName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upstreamPipeSegment {
+  min-width: 2px;
+  border-radius: 2px;
+  background: #dbe3ee;
+}
+
+.upstreamPipeSegment.success {
+  background: var(--success);
+}
+
+.upstreamPipeSegment.failed {
+  background: var(--error);
+}
+
+.upstreamPipeSegment.partial {
+  background: var(--warning);
+}
+
+.upstreamPipeSegment.skipped {
+  background: var(--warning);
+}
+
+.upstreamPipeSegment.empty {
+  background: #dbe3ee;
+}
+
+.upstreamAccountActions {
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.upstreamAccountActions button {
+  width: 108px;
+}
+
+.switchRow {
+  flex-direction: row;
+  gap: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 10px 12px;
+}
+
+.switchRow > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
 }
 
 .paginationBar {
@@ -1920,8 +2295,14 @@ select {
 
   .panelGrid,
   .moduleGrid,
-  .filterBar {
+  .filterBar,
+  .upstreamLayout {
     grid-template-columns: 1fr;
+  }
+
+  .upstreamGroupList {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: none;
   }
 }
 
@@ -1965,13 +2346,26 @@ select {
   }
 
   .testRow,
-  .taskItem {
+  .taskItem,
+  .upstreamAccountItem {
     align-items: stretch;
+    grid-template-columns: 1fr;
     flex-direction: column;
   }
 
-  .taskActions {
+  .taskActions,
+  .upstreamAccountActions {
+    flex-direction: row;
     justify-content: space-between;
+  }
+
+  .upstreamAccountActions button {
+    width: 100%;
+  }
+
+  .upstreamModelPipeline {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 }
 
@@ -2015,5 +2409,13 @@ select {
 
   .modalFooter button {
     width: 100%;
+  }
+
+  .upstreamGroupList {
+    grid-template-columns: 1fr;
+  }
+
+  .upstreamAccountTitle strong {
+    max-width: 100%;
   }
 }

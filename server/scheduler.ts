@@ -3,7 +3,7 @@ import { getEmailSettings, sendEmail } from './email.js';
 import { nowIso, parseJson, parseTask, readChannelCache, readTaskState, upsertTaskState } from './db.js';
 import { filterGroupsByIdentifiers, filterGroupsByTokenUsage, groupList, normalizeGroups, watchedGroupIdentifiers } from './groupMonitoring.js';
 import { syncChannel } from './adapters.js';
-import { runDueOwnedSiteTasks } from './ownedSites.js';
+import { runDueOwnedSiteTasks, runDueOwnedSiteUpstreamMonitors } from './ownedSites.js';
 import type { AutomationTaskRecord, BalanceSnapshot, ChannelType } from './types.js';
 
 export interface EvaluationResult {
@@ -229,6 +229,7 @@ export class Scheduler {
     try {
       await runDueTasks(this.db);
       await runDueOwnedSiteTasks(this.db);
+      await runDueOwnedSiteUpstreamMonitors(this.db);
     } finally {
       this.running = false;
     }

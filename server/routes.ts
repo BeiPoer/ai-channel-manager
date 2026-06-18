@@ -24,8 +24,16 @@ import {
   checkOwnedSite,
   fetchOwnedSiteAccounts,
   fetchOwnedSiteGroups,
+  getOwnedSiteUpstreamAlertSetting,
+  getOwnedSiteUpstreamGroupMonitor,
+  getOwnedSiteUpstreamMonitor,
+  listOwnedSiteUpstreamAccounts,
   normalizeOwnedSiteBaseUrl,
-  normalizeOwnedSiteTaskPayload
+  normalizeOwnedSiteTaskPayload,
+  runOwnedSiteUpstreamMonitor,
+  saveOwnedSiteUpstreamGroupMonitor,
+  saveOwnedSiteUpstreamAlertSetting,
+  saveOwnedSiteUpstreamMonitor
 } from './ownedSites.js';
 import { filterGroupsByTokenUsage } from './groupMonitoring.js';
 import type { AutomationTaskRecord, AutomationTaskType, ChannelRecord, ChannelType, OwnedSiteAutomationTaskRecord, OwnedSiteRecord, OwnedSiteType } from './types.js';
@@ -42,6 +50,13 @@ function idParam(req: Request): number {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) throw new UpstreamError('无效的 ID', 400);
   return id;
+}
+
+function textParam(value: string | string[] | undefined, label: string): string {
+  const text = Array.isArray(value) ? value[0] : value;
+  const trimmed = String(text || '').trim();
+  if (!trimmed) throw new UpstreamError(`${label}无效`, 400);
+  return trimmed;
 }
 
 function ensureChannel(db: DatabaseSync, id: number): ChannelRecord {
@@ -502,6 +517,54 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const id = idParam(req);
     const site = ensureOwnedSite(db, id);
     res.json(await fetchOwnedSiteAccounts(site, req.query as Record<string, unknown>));
+  }));
+
+  app.get('/api/owned-sites/:id/upstream/accounts', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await listOwnedSiteUpstreamAccounts(db, site, String(req.query.group || '')));
+  }));
+
+  app.get('/api/owned-sites/:id/upstream/alert-setting', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await getOwnedSiteUpstreamAlertSetting(db, site));
+  }));
+
+  app.put('/api/owned-sites/:id/upstream/alert-setting', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await saveOwnedSiteUpstreamAlertSetting(db, site, req.body || {}));
+  }));
+
+  app.get('/api/owned-sites/:id/upstream/groups/:groupId/monitor', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await getOwnedSiteUpstreamGroupMonitor(db, site, textParam(req.params.groupId, '分组 ID')));
+  }));
+
+  app.put('/api/owned-sites/:id/upstream/groups/:groupId/monitor', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await saveOwnedSiteUpstreamGroupMonitor(db, site, textParam(req.params.groupId, '分组 ID'), req.body || {}));
+  }));
+
+  app.get('/api/owned-sites/:id/upstream/accounts/:accountId/monitor', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await getOwnedSiteUpstreamMonitor(db, site, textParam(req.params.accountId, '账号 ID')));
+  }));
+
+  app.put('/api/owned-sites/:id/upstream/accounts/:accountId/monitor', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await saveOwnedSiteUpstreamMonitor(db, site, textParam(req.params.accountId, '账号 ID'), req.body || {}));
+  }));
+
+  app.post('/api/owned-sites/:id/upstream/accounts/:accountId/monitor/run', asyncRoute(async (req, res) => {
+    const id = idParam(req);
+    const site = ensureOwnedSite(db, id);
+    res.json(await runOwnedSiteUpstreamMonitor(db, site, textParam(req.params.accountId, '账号 ID')));
   }));
 
   app.get('/api/owned-sites/:id/tasks', (req, res) => {

@@ -1,5 +1,5 @@
 export type ChannelTabKey = 'overview' | 'automation' | 'balance-logs' | 'alerts';
-export type OwnedSiteTabKey = 'overview' | 'groups' | 'accounts' | 'automation' | 'alerts';
+export type OwnedSiteTabKey = 'overview' | 'groups' | 'upstream' | 'accounts' | 'automation' | 'alerts';
 
 export type AppRoute =
   | { module: 'home' }
@@ -9,7 +9,7 @@ export type AppRoute =
 export type NavigationMode = 'push' | 'replace';
 
 const channelTabs = new Set<ChannelTabKey>(['overview', 'automation', 'balance-logs', 'alerts']);
-const ownedSiteTabs = new Set<OwnedSiteTabKey>(['overview', 'groups', 'accounts', 'automation', 'alerts']);
+const ownedSiteTabs = new Set<OwnedSiteTabKey>(['overview', 'groups', 'upstream', 'accounts', 'automation', 'alerts']);
 
 function positiveInteger(value: string | undefined): number | undefined {
   if (!value) return undefined;

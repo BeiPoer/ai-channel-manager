@@ -4,7 +4,7 @@ export type CacheKey = 'profile' | 'groups' | 'tokens' | 'subscriptions';
 export type AutomationTaskType = 'low_balance' | 'burn_rate' | 'group_added' | 'group_removed' | 'group_ratio_changed';
 export type OwnedSiteType = 'sub2api';
 export type OwnedSiteStatus = 'active' | 'error' | 'syncing';
-export type OwnedSiteTaskType = 'account_error';
+export type OwnedSiteTaskType = 'account_error' | 'upstream_monitor_failed';
 export type OwnedSiteTaskTargetType = 'account' | 'group';
 
 export interface ChannelRecord {
@@ -169,6 +169,65 @@ export interface OwnedSiteAccountStateRecord {
   status: string | null;
   error_message: string | null;
   group_ids_json: string | null;
+  raw_json: string | null;
+  checked_at: string;
+}
+
+export type OwnedSiteUpstreamMonitorStatus = 'success' | 'failed' | 'partial' | 'skipped';
+export type OwnedSiteUpstreamTimelineStatus = OwnedSiteUpstreamMonitorStatus | 'empty';
+
+export interface OwnedSiteUpstreamGroupMonitorRecord {
+  id: number;
+  site_id: number;
+  group_id: string;
+  group_name: string | null;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OwnedSiteUpstreamAlertSettingRecord {
+  site_id: number;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OwnedSiteUpstreamMonitorRecord {
+  id: number;
+  site_id: number;
+  account_id: string;
+  account_name: string | null;
+  account_platform: string | null;
+  account_type: string | null;
+  group_ids_json: string;
+  enabled: number;
+  interval_minutes: number;
+  retry_count: number;
+  pause_start_time: string;
+  pause_end_time: string;
+  skip_model_patterns_json: string;
+  last_run_at: string | null;
+  last_status: OwnedSiteUpstreamMonitorStatus | null;
+  last_error: string | null;
+  last_latency_ms: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OwnedSiteUpstreamMonitorResultRecord {
+  id: number;
+  site_id: number;
+  monitor_id: number | null;
+  account_id: string;
+  account_name: string | null;
+  model: string | null;
+  status: OwnedSiteUpstreamMonitorStatus;
+  attempt_count: number | null;
+  success_count: number | null;
+  failure_count: number | null;
+  latency_ms: number | null;
+  message: string;
   raw_json: string | null;
   checked_at: string;
 }

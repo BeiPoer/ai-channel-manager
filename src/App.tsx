@@ -48,6 +48,11 @@ import type {
   OwnedSiteAutomationTask,
   OwnedSiteGroup,
   OwnedSiteTaskTargetType,
+  OwnedSiteUpstreamAccount,
+  OwnedSiteUpstreamAlertSetting,
+  OwnedSiteUpstreamGroupMonitor,
+  OwnedSiteUpstreamMonitor,
+  OwnedSiteUpstreamTimelinePoint,
   PaginatedResult,
   TaskType,
   TokenModelsResult
@@ -113,6 +118,11 @@ const accountStatusCopy: Record<string, string> = {
 const ownedTaskTargetCopy: Record<OwnedSiteTaskTargetType, string> = {
   account: '指定账号',
   group: '指定分组'
+};
+
+const ownedAlertTypeCopy: Record<OwnedSiteAlertEvent['type'], string> = {
+  account_error: '账号错误',
+  upstream_monitor_failed: '上游监控'
 };
 
 const taskTypeCopy: Record<TaskType, string> = {
@@ -666,6 +676,34 @@ function accountGroupLabel(account: OwnedSiteAccount, groups: OwnedSiteGroup[] =
 
 function accountStatusLabel(status: string) {
   return accountStatusCopy[status] || status || '-';
+}
+
+function upstreamPlatformLabel(platform: string) {
+  const normalized = platform.toLowerCase();
+  if (normalized === 'anthropic' || normalized === 'claude') return 'Claude';
+  if (normalized === 'openai') return 'OpenAI';
+  return platform || '-';
+}
+
+function upstreamMonitorStatusLabel(status: OwnedSiteUpstreamMonitor['last_status'] | 'empty') {
+  if (status === 'success') return '成功';
+  if (status === 'failed') return '失败';
+  if (status === 'partial') return '部分成功';
+  if (status === 'skipped') return '跳过';
+  return '无数据';
+}
+
+function upstreamTimelineTitle(point: OwnedSiteUpstreamTimelinePoint) {
+  const parts = [formatShortTime(point.minute, '-'), `${point.bucket_minutes || 1}分钟窗口`, upstreamMonitorStatusLabel(point.status)];
+  if (point.model) parts.push(point.model);
+  if (point.attempt_count !== null || point.success_count !== null || point.failure_count !== null) {
+    parts.push(`尝试 ${point.attempt_count ?? 0} 次`);
+    parts.push(`成功 ${point.success_count ?? 0} 次`);
+    parts.push(`失败 ${point.failure_count ?? 0} 次`);
+  }
+  if (point.latency_ms !== null) parts.push(`${point.latency_ms}ms`);
+  if (point.message) parts.push(point.message);
+  return parts.join(' · ');
 }
 
 function isGroupTaskType(type: TaskType) {
@@ -2548,6 +2586,454 @@ function OwnedSiteAccountsPanel({ site }: { site: OwnedSite }) {
   );
 }
 
+function UpstreamStatusPipeline({ points }: { points: OwnedSiteUpstreamTimelinePoint[] }) {
+  return (
+    <div className="upstreamPipeline" aria-label="近 120 分钟状态管道">
+      {points.map((point) => (
+        <span key={point.minute} className={`upstreamPipeSegment ${point.status}`} title={upstreamTimelineTitle(point)} />
+      ))}
+    </div>
+  );
+}
+
+function UpstreamModelPipelines({ item }: { item: OwnedSiteUpstreamAccount }) {
+  if (item.model_list_error) {
+    return <p className="upstreamAccountError">模型列表获取失败：{item.model_list_error}</p>;
+  }
+  if (!item.model_timelines.length) {
+    return <div className="emptyHint">暂无可测试模型，或模型均已按配置跳过。</div>;
+  }
+  return (
+    <div className="upstreamModelPipelines">
+      {item.model_timelines.map((modelTimeline) => (
+        <div className="upstreamModelPipeline" key={modelTimeline.model}>
+          <div className="upstreamModelName" title={modelTimeline.model}>
+            {modelTimeline.model}
+          </div>
+          <UpstreamStatusPipeline points={modelTimeline.timeline} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function UpstreamMonitorModal({
+  site,
+  item,
+  onClose,
+  onSaved
+}: {
+  site: OwnedSite;
+  item: OwnedSiteUpstreamAccount;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    interval_minutes: item.monitor.interval_minutes,
+    retry_count: item.monitor.retry_count,
+    pause_start_time: item.monitor.pause_start_time,
+    pause_end_time: item.monitor.pause_end_time,
+    skip_model_patterns: item.monitor.skip_model_patterns.join('\n')
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      await api.updateOwnedSiteUpstreamMonitor(site.id, item.account.id, {
+        interval_minutes: Number(form.interval_minutes),
+        retry_count: Number(form.retry_count),
+        pause_start_time: form.pause_start_time,
+        pause_end_time: form.pause_end_time,
+        skip_model_patterns: form.skip_model_patterns
+      });
+      await onSaved();
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modalBackdrop" role="presentation">
+      <form className="modal" onSubmit={submit}>
+        <div className="modalHeader">
+          <div>
+            <span className="modalEyebrow">UPSTREAM MONITOR</span>
+            <h2>{item.account.name || item.account.id}</h2>
+            <p>
+              {upstreamPlatformLabel(item.account.platform)} · {item.account.type || '-'} · {accountGroupLabel(item.account)}
+            </p>
+          </div>
+          <button className="iconButton" onClick={onClose} type="button" aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+
+        {error && <div className="inlineNotice error">{error}</div>}
+
+        <label>
+          测试间隔（分钟）
+          <input
+            type="number"
+            min={1}
+            max={1440}
+            value={form.interval_minutes}
+            onChange={(event) => setForm({ ...form, interval_minutes: Number(event.target.value) })}
+          />
+        </label>
+
+        <label>
+          重试次数
+          <input
+            type="number"
+            min={0}
+            max={5}
+            value={form.retry_count}
+            onChange={(event) => setForm({ ...form, retry_count: Number(event.target.value) })}
+          />
+        </label>
+
+        <label>
+          暂停时间段
+          <div className="timeRangeInputs">
+            <input
+              type="time"
+              value={form.pause_start_time}
+              onChange={(event) => setForm({ ...form, pause_start_time: event.target.value })}
+            />
+            <span>至</span>
+            <input
+              type="time"
+              value={form.pause_end_time}
+              onChange={(event) => setForm({ ...form, pause_end_time: event.target.value })}
+            />
+          </div>
+        </label>
+        <p className="fieldHint">该时间段内自动调度不触发监控测试，立即测试不受影响。</p>
+
+        <label>
+          跳过测试的模型
+          <textarea
+            value={form.skip_model_patterns}
+            onChange={(event) => setForm({ ...form, skip_model_patterns: event.target.value })}
+            placeholder={'gpt-image-*\ncodex-auto-review'}
+          />
+        </label>
+        <p className="fieldHint">支持换行、逗号或分号分隔；星号 `*` 可匹配任意字符。</p>
+
+        <div className="modalFooter">
+          <button className="ghostButton" onClick={onClose} type="button">
+            取消
+          </button>
+          <button className="primaryButton" disabled={saving} type="submit">
+            <Settings size={16} />
+            {saving ? '保存中' : '保存配置'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function OwnedSiteUpstreamPanel({ site }: { site: OwnedSite }) {
+  const [groups, setGroups] = useState<OwnedSiteGroup[]>([]);
+  const [selectedGroup, setSelectedGroup] = useState('');
+  const [items, setItems] = useState<OwnedSiteUpstreamAccount[]>([]);
+  const [groupMonitorsById, setGroupMonitorsById] = useState<Record<string, OwnedSiteUpstreamGroupMonitor>>({});
+  const [alertSetting, setAlertSetting] = useState<OwnedSiteUpstreamAlertSetting | null>(null);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [savingGroupMonitorId, setSavingGroupMonitorId] = useState('');
+  const [savingAlertSetting, setSavingAlertSetting] = useState(false);
+  const [runningId, setRunningId] = useState('');
+  const [editing, setEditing] = useState<OwnedSiteUpstreamAccount | null>(null);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const selectedGroupLabel = groups.find((group) => group.id === selectedGroup)?.name || selectedGroup || '未选择分组';
+  const selectedGroupMonitor = selectedGroup ? groupMonitorsById[selectedGroup] || null : null;
+
+  const loadAccounts = useCallback(
+    async (group = selectedGroup) => {
+      if (!group) {
+        setItems([]);
+        return;
+      }
+      setLoadingAccounts(true);
+      setError('');
+      try {
+        const [nextItems, nextGroupMonitor] = await Promise.all([
+          api.ownedSiteUpstreamAccounts(site.id, group),
+          api.ownedSiteUpstreamGroupMonitor(site.id, group)
+        ]);
+        setItems(nextItems);
+        const resolvedGroupMonitor = nextItems[0]?.group_monitor || nextGroupMonitor;
+        setGroupMonitorsById((current) => ({ ...current, [group]: resolvedGroupMonitor }));
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setLoadingAccounts(false);
+      }
+    },
+    [selectedGroup, site.id]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingGroups(true);
+    setError('');
+    api
+      .ownedSiteGroups(site.id)
+      .then(async (nextGroups) => {
+        if (cancelled) return;
+        setGroups(nextGroups);
+        const first = nextGroups[0]?.id || '';
+        setSelectedGroup(first);
+        if (!first) setItems([]);
+        const monitorResults = await Promise.allSettled(nextGroups.map((group) => api.ownedSiteUpstreamGroupMonitor(site.id, group.id)));
+        if (cancelled) return;
+        const nextMonitors: Record<string, OwnedSiteUpstreamGroupMonitor> = {};
+        for (const result of monitorResults) {
+          if (result.status === 'fulfilled') nextMonitors[result.value.group_id] = result.value;
+        }
+        setGroupMonitorsById(nextMonitors);
+        const failed = monitorResults.find((result) => result.status === 'rejected');
+        if (failed?.status === 'rejected') setError((failed.reason as Error).message);
+      })
+      .catch((err) => {
+        if (!cancelled) setError((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingGroups(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [site.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .ownedSiteUpstreamAlertSetting(site.id)
+      .then((next) => {
+        if (!cancelled) setAlertSetting(next);
+      })
+      .catch((err) => {
+        if (!cancelled) setError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [site.id]);
+
+  useEffect(() => {
+    if (!selectedGroup) return;
+    void loadAccounts(selectedGroup);
+  }, [selectedGroup, loadAccounts]);
+
+  async function runNow(item: OwnedSiteUpstreamAccount) {
+    setRunningId(item.account.id);
+    setError('');
+    setMessage('');
+    try {
+      const result = await api.runOwnedSiteUpstreamMonitor(site.id, item.account.id);
+      setMessage(`${item.account.name || item.account.id} 测试完成：${upstreamMonitorStatusLabel(result.status)}`);
+      await loadAccounts();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRunningId('');
+    }
+  }
+
+  async function toggleGroupMonitor(group: OwnedSiteGroup, enabled: boolean) {
+    setSavingGroupMonitorId(group.id);
+    setError('');
+    setMessage('');
+    try {
+      const next = await api.updateOwnedSiteUpstreamGroupMonitor(site.id, group.id, { enabled });
+      setGroupMonitorsById((current) => ({ ...current, [group.id]: next }));
+      setMessage(`${group.name || group.id} 监控已${next.enabled ? '开启' : '关闭'}`);
+      if (group.id === selectedGroup) await loadAccounts(group.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingGroupMonitorId('');
+    }
+  }
+
+  async function toggleAlertSetting(enabled: boolean) {
+    setSavingAlertSetting(true);
+    setError('');
+    setMessage('');
+    try {
+      const next = await api.updateOwnedSiteUpstreamAlertSetting(site.id, { enabled });
+      setAlertSetting(next);
+      setMessage(`上游邮件告警已${next.enabled ? '开启' : '关闭'}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingAlertSetting(false);
+    }
+  }
+
+  return (
+    <DataSection
+      title="上游账号监控"
+      description="按分组查看开启中的 APIKEY 上游账号，并记录近 120 分钟测试状态"
+      icon={<Server size={17} />}
+      right={
+        <button className="ghostButton" onClick={() => loadAccounts()} disabled={loadingAccounts || !selectedGroup} type="button">
+          <RefreshCw size={16} className={loadingAccounts ? 'spin' : ''} />
+          刷新
+        </button>
+      }
+    >
+      {error && <div className="inlineNotice error">{error}</div>}
+      {message && <div className="inlineNotice success">{message}</div>}
+
+      <div className="upstreamAlertBar">
+        <div>
+          <strong>邮件告警</strong>
+          <span>某个模型连续 3 次请求都失败时，复用邮件设置发送告警。</span>
+        </div>
+        <label className={`switch ${savingAlertSetting ? 'disabled' : ''}`}>
+          <input
+            aria-label="上游邮件告警"
+            type="checkbox"
+            checked={Boolean(alertSetting?.enabled)}
+            disabled={savingAlertSetting || !alertSetting}
+            onChange={(event) => toggleAlertSetting(event.target.checked)}
+          />
+          <span />
+        </label>
+      </div>
+
+      <div className="upstreamLayout">
+        <aside className="upstreamGroupRail">
+          <div className="upstreamRailHeader">
+            <strong>分组</strong>
+            <span>{groups.length} 个</span>
+          </div>
+          {loadingGroups && !groups.length ? (
+            <LoadingState label="正在加载分组" />
+          ) : groups.length ? (
+            <>
+              <div className="upstreamGroupList">
+                {groups.map((group) => {
+                  const monitor = groupMonitorsById[group.id];
+                  const enabled = Boolean(monitor?.enabled);
+                  const saving = savingGroupMonitorId === group.id;
+                  return (
+                    <div
+                      className={`upstreamGroupItem ${group.id === selectedGroup ? 'selected' : ''}`}
+                      key={group.id}
+                    >
+                      <button className="upstreamGroupSelect" onClick={() => setSelectedGroup(group.id)} type="button">
+                        <span className="upstreamGroupName">{group.name || group.id}</span>
+                        <span className="upstreamGroupMeta">
+                          <small>{group.id}</small>
+                          <span className={`upstreamMonitorState ${enabled ? 'success' : 'empty'}`}>{enabled ? '监控中' : '已关闭'}</span>
+                        </span>
+                      </button>
+                      <label className={`switch upstreamGroupInlineSwitch ${saving ? 'disabled' : ''}`}>
+                        <input
+                          aria-label={`${group.name || group.id} 分组监控`}
+                          type="checkbox"
+                          checked={enabled}
+                          disabled={saving}
+                          onChange={(event) => toggleGroupMonitor(group, event.target.checked)}
+                        />
+                        <span />
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <EmptyPanel icon={<Users size={24} />} title="暂无分组" />
+          )}
+        </aside>
+
+        <div className="upstreamAccounts">
+          <div className="upstreamAccountsHeader">
+            <div>
+              <strong>{selectedGroupLabel}</strong>
+              <span>{items.length} 个可监控账号</span>
+            </div>
+            <div className="upstreamHeaderPills">
+              <span className={`upstreamMonitorState ${selectedGroupMonitor?.enabled ? 'success' : 'empty'}`}>{selectedGroupMonitor?.enabled ? '分组监控中' : '分组监控关闭'}</span>
+              <span className="dataPill">active APIKEY</span>
+            </div>
+          </div>
+
+          {loadingAccounts && !items.length ? (
+            <LoadingState label="正在加载上游账号" />
+          ) : items.length ? (
+            <div className="upstreamAccountList">
+              {items.map((item) => (
+                <article className="upstreamAccountItem" key={item.account.id}>
+                  <div className="upstreamAccountMain">
+                    <div className="upstreamAccountTitle">
+                      <strong title={item.account.name || item.account.id}>{item.account.name || item.account.id}</strong>
+                      <span className={`upstreamMonitorState ${item.group_monitor.enabled ? 'success' : 'empty'}`}>
+                        {item.group_monitor.enabled ? '随分组监控' : '分组未开启'}
+                      </span>
+                      {item.monitor.last_status && <span className={`upstreamMonitorState ${item.monitor.last_status}`}>{upstreamMonitorStatusLabel(item.monitor.last_status)}</span>}
+                    </div>
+                    <div className="upstreamAccountMeta">
+                      <span>{item.account.id}</span>
+                      <span>{upstreamPlatformLabel(item.account.platform)}</span>
+                      <span>{accountStatusLabel(item.account.status)}</span>
+                      <span>{item.account.schedulable === null ? '调度未知' : item.account.schedulable ? '可调度' : '不可调度'}</span>
+                      <span>间隔 {item.monitor.interval_minutes} 分钟</span>
+                      <span>重试 {item.monitor.retry_count} 次</span>
+                      <span>暂停 {item.monitor.pause_start_time}~{item.monitor.pause_end_time}</span>
+                      <span>上次 {formatShortTime(item.monitor.last_run_at, '尚未运行')}</span>
+                    </div>
+                    {item.monitor.last_error && <p className="upstreamAccountError">{item.monitor.last_error}</p>}
+                    <UpstreamModelPipelines item={item} />
+                  </div>
+                  <div className="upstreamAccountActions">
+                    <button className="ghostButton" type="button" onClick={() => setEditing(item)}>
+                      <Settings size={16} />
+                      配置
+                    </button>
+                    <button className="primaryButton" type="button" onClick={() => runNow(item)} disabled={runningId === item.account.id}>
+                      <Zap size={16} className={runningId === item.account.id ? 'spin' : ''} />
+                      {runningId === item.account.id ? '测试中' : '立即测试'}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyPanel icon={<Server size={24} />} title={selectedGroup ? '当前分组暂无可监控账号' : '请选择分组'} />
+          )}
+        </div>
+      </div>
+
+      {editing && (
+        <UpstreamMonitorModal
+          site={site}
+          item={editing}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            await loadAccounts();
+          }}
+        />
+      )}
+    </DataSection>
+  );
+}
+
 function ownedTaskTargetLabel(task: OwnedSiteAutomationTask) {
   const id = task.target_type === 'account' ? task.target_account_id : task.target_group_id;
   const name = task.target_type === 'account' ? task.target_account_name : task.target_group_name;
@@ -2787,7 +3273,7 @@ function OwnedSiteAlertsPanel({ site }: { site: OwnedSite }) {
               {alerts.map((alert) => (
                 <tr key={alert.id}>
                   <td>{formatTime(alert.created_at)}</td>
-                  <td>{alert.target_type ? ownedTaskTargetCopy[alert.target_type] : '-'}</td>
+                  <td>{ownedAlertTypeCopy[alert.type] || alert.type}</td>
                   <td title={alert.account_id || ''}>{alert.account_name || alert.account_id || '-'}</td>
                   <td>
                     {alert.before_status || '-'} → {alert.after_status || '-'}
@@ -2926,6 +3412,7 @@ function OwnedSiteManagerView({
   const tabs: Array<{ key: OwnedSiteTabKey; label: string; icon: ReactNode }> = [
     { key: 'overview', label: '概览', icon: <Activity size={16} /> },
     { key: 'groups', label: '分组', icon: <Users size={16} /> },
+    { key: 'upstream', label: '上游', icon: <Server size={16} /> },
     { key: 'accounts', label: '账号', icon: <KeyRound size={16} /> },
     { key: 'automation', label: '自动化', icon: <Clock3 size={16} /> },
     { key: 'alerts', label: '告警', icon: <Bell size={16} /> }
@@ -3080,6 +3567,7 @@ function OwnedSiteManagerView({
             <section className="content">
               {tab === 'overview' && <OwnedSiteOverview site={selected} onSiteChanged={(site) => loadSites(site.id)} />}
               {tab === 'groups' && <OwnedSiteGroupsPanel site={selected} />}
+              {tab === 'upstream' && <OwnedSiteUpstreamPanel site={selected} />}
               {tab === 'accounts' && <OwnedSiteAccountsPanel site={selected} />}
               {tab === 'automation' && (
                 <OwnedSiteAutomationPanel
