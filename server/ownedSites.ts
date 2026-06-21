@@ -237,7 +237,7 @@ async function ownedSiteRawRequest(site: OwnedSiteRecord, path: string, init: Re
       } catch {
         payload = { text };
       }
-      throw new UpstreamError(extractMessage(payload) || `上游请求失败：HTTP ${response.status}`, response.status, payload);
+      throw new UpstreamError(extractMessage(payload) || `上游请求失败：HTTP ${response.status}`, response.status, payload, 'upstream');
     }
     return {
       status: response.status,
@@ -246,8 +246,8 @@ async function ownedSiteRawRequest(site: OwnedSiteRecord, path: string, init: Re
     };
   } catch (error) {
     if (error instanceof UpstreamError) throw error;
-    if ((error as Error).name === 'AbortError') throw new UpstreamError('上游请求超时', 504);
-    throw new UpstreamError((error as Error).message || '上游请求失败', 502);
+    if ((error as Error).name === 'AbortError') throw new UpstreamError('上游请求超时', 504, undefined, 'upstream');
+    throw new UpstreamError((error as Error).message || '上游请求失败', 502, undefined, 'upstream');
   } finally {
     clearTimeout(timeout);
   }

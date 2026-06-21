@@ -67,6 +67,19 @@ async function startNewApiMock() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function startNewApiUnauthorizedMock() {
+  const server = http.createServer((_req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.writeHead(401);
+    res.end(JSON.stringify({ success: false, message: 'No permission to perform this operation, not logged in and no access token provided' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  servers.push(server);
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('mock failed');
+  return `http://127.0.0.1:${address.port}`;
+}
+
 async function startOwnedSub2apiMock(handler?: (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => boolean | void) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -128,6 +141,31 @@ describe('local API', () => {
     await agent.get('/api/channels').expect(200);
     await agent.post('/api/auth/logout').expect(200);
     await agent.get('/api/channels').expect(401);
+    db.close();
+  });
+
+  it('keeps the local session when channel sync receives an upstream 401', async () => {
+    const baseUrl = await startNewApiUnauthorizedMock();
+    const db = createDatabase(':memory:');
+    const app = createApp(db, testConfig);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').send({ password: 'test-password' }).expect(200);
+    const now = new Date().toISOString();
+    const channelId = Number(db.prepare(`
+      INSERT INTO channels (
+        name, type, base_url, username, newapi_access_token, newapi_user_id, status, created_at, updated_at
+      ) VALUES ('n', 'newapi', ?, 'u', 'bad-token', '42', 'active', ?, ?)
+    `).run(baseUrl, now, now).lastInsertRowid);
+
+    const response = await agent.post(`/api/channels/${channelId}/sync`).expect(502);
+    expect(response.body.error).toBe('No permission to perform this operation, not logged in and no access token provided');
+
+    const channels = await agent.get('/api/channels').expect(200);
+    expect(channels.body[0]).toMatchObject({
+      id: channelId,
+      status: 'error',
+      last_error: 'No permission to perform this operation, not logged in and no access token provided'
+    });
     db.close();
   });
 

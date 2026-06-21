@@ -1,12 +1,16 @@
+export type UpstreamErrorOrigin = 'app' | 'upstream';
+
 export class UpstreamError extends Error {
   status: number;
   details: unknown;
+  origin: UpstreamErrorOrigin;
 
-  constructor(message: string, status = 502, details?: unknown) {
+  constructor(message: string, status = 502, details?: unknown, origin: UpstreamErrorOrigin = 'app') {
     super(message);
     this.name = 'UpstreamError';
     this.status = status;
     this.details = details;
+    this.origin = origin;
   }
 }
 
@@ -39,15 +43,15 @@ export async function requestJson<T = unknown>(url: string, init: RequestInit = 
     }
     if (!response.ok) {
       const message = extractMessage(data) || `上游请求失败：HTTP ${response.status}`;
-      throw new UpstreamError(message, response.status, data);
+      throw new UpstreamError(message, response.status, data, 'upstream');
     }
     return { status: response.status, data: data as T };
   } catch (error) {
     if (error instanceof UpstreamError) throw error;
     if ((error as Error).name === 'AbortError') {
-      throw new UpstreamError('上游请求超时', 504);
+      throw new UpstreamError('上游请求超时', 504, undefined, 'upstream');
     }
-    throw new UpstreamError((error as Error).message || '上游请求失败', 502);
+    throw new UpstreamError((error as Error).message || '上游请求失败', 502, undefined, 'upstream');
   } finally {
     clearTimeout(timeout);
   }
@@ -61,4 +65,3 @@ export function extractMessage(payload: unknown): string | null {
   if (typeof record.msg === 'string' && record.msg.trim()) return record.msg;
   return null;
 }
-

@@ -695,7 +695,12 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
   });
 
   app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
-    const status = error instanceof UpstreamError ? error.status : 500;
+    // Upstream auth failures must not look like this app's session has expired.
+    const status = error instanceof UpstreamError && error.origin === 'upstream' && error.status === 401
+      ? 502
+      : error instanceof UpstreamError
+        ? error.status
+        : 500;
     res.status(status >= 400 && status < 600 ? status : 500).json({
       error: error.message || '服务器内部错误'
     });
