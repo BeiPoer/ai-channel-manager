@@ -2,27 +2,27 @@
 set -eu
 
 # One-command production update for ai-channel-manager.
-# Defaults target a systemd service named "ai-channel-manager".
+# Defaults target a PM2 process named "ai-channel-manager".
 #
 # Common usage:
 #   sh scripts/deploy.sh
-#   SERVICE_NAME=ai-channel-manager sh scripts/deploy.sh
-#   PORT=8787 sh scripts/deploy.sh
-#   RESTART_CMD='sudo systemctl restart ai-channel-manager' sh scripts/deploy.sh
-#   SERVICE_MANAGER=pm2 PM2_NAME=ai-channel-manager sh scripts/deploy.sh
+#   PORT=3642 sh scripts/deploy.sh
+#   PM2_NAME=ai-channel-manager sh scripts/deploy.sh
+#   SERVICE_MANAGER=systemd SERVICE_NAME=ai-channel-manager sh scripts/deploy.sh
+#   RESTART_CMD='pm2 restart ai-channel-manager --update-env' sh scripts/deploy.sh
 
 PROJECT_DIR=${PROJECT_DIR:-}
 BRANCH=${BRANCH:-main}
 INSTALL_CMD=${INSTALL_CMD:-npm ci}
 BUILD_CMD=${BUILD_CMD:-npm run build}
-SERVICE_MANAGER=${SERVICE_MANAGER:-auto}
+SERVICE_MANAGER=${SERVICE_MANAGER:-pm2}
 SERVICE_NAME=${SERVICE_NAME:-ai-channel-manager}
 PM2_NAME=${PM2_NAME:-ai-channel-manager}
 SERVICE_USER=${SERVICE_USER:-}
 INSTALL_SYSTEMD_SERVICE=${INSTALL_SYSTEMD_SERVICE:-auto}
 RESTART_CMD=${RESTART_CMD:-}
 APP_HOST=${HOST:-127.0.0.1}
-APP_PORT=${PORT:-}
+APP_PORT=${PORT:-3642}
 APP_NODE_ENV=${NODE_ENV:-production}
 HEALTH_URL=${HEALTH_URL:-}
 HEALTH_RETRIES=${HEALTH_RETRIES:-20}
@@ -135,7 +135,7 @@ resolve_new_service_port() {
   fi
 
   if [ ! -t 0 ]; then
-    fail "PORT is required when creating the systemd service in non-interactive mode. Example: PORT=8787 sh scripts/deploy.sh"
+    fail "PORT is required when creating the systemd service in non-interactive mode. Example: PORT=3642 sh scripts/deploy.sh"
   fi
 
   while :; do
@@ -165,7 +165,7 @@ ensure_health_url() {
     return
   fi
 
-  HEALTH_URL="http://127.0.0.1:8787/api/auth/status"
+  HEALTH_URL="http://127.0.0.1:3642/api/auth/status"
 }
 
 ensure_runtime_config_exists() {
@@ -254,6 +254,26 @@ pm2_process_exists() {
   pm2 describe "$PM2_NAME" >/dev/null 2>&1
 }
 
+pm2_process_online() {
+  command_exists pm2 || return 1
+  pm2 describe "$PM2_NAME" 2>/dev/null | grep -Eq 'status.*online'
+}
+
+wait_for_pm2_online() {
+  i=1
+  while [ "$i" -le 10 ]; do
+    if pm2_process_online; then
+      return
+    fi
+    printf '%s\n' "Waiting for PM2 process to be online... ($i/10)"
+    sleep 1
+    i=$((i + 1))
+  done
+
+  pm2 status "$PM2_NAME" || true
+  fail "PM2 process is not online: $PM2_NAME"
+}
+
 create_systemd_service() {
   validate_service_name
   systemd_available || fail "systemd is not available. Set SERVICE_MANAGER=pm2, SERVICE_MANAGER=none, or RESTART_CMD='your restart command'."
@@ -324,12 +344,17 @@ restart_with_systemd() {
 
 restart_with_pm2() {
   command_exists pm2 || fail "pm2 is required"
+  ensure_runtime_config_exists
+  is_valid_port "$APP_PORT" || fail "Invalid PORT: $APP_PORT. Use a number from 1 to 65535."
+  set_default_health_url_from_port "$APP_PORT"
+
   log "Restarting PM2 process: $PM2_NAME"
   if pm2_process_exists; then
-    pm2 restart "$PM2_NAME" --update-env
+    HOST="$APP_HOST" PORT="$APP_PORT" NODE_ENV="$APP_NODE_ENV" pm2 restart "$PM2_NAME" --update-env
   else
-    pm2 start npm --name "$PM2_NAME" -- start
+    HOST="$APP_HOST" PORT="$APP_PORT" NODE_ENV="$APP_NODE_ENV" pm2 start dist/server/index.js --name "$PM2_NAME"
   fi
+  wait_for_pm2_online
   pm2 save
   pm2 status "$PM2_NAME" || true
 }
@@ -352,12 +377,12 @@ run_restart() {
       log "Skipping restart because SERVICE_MANAGER=none"
       ;;
     auto)
-      if systemd_unit_exists; then
+      if pm2_process_exists; then
+        restart_with_pm2
+      elif systemd_unit_exists; then
         restart_with_systemd
       elif systemd_available; then
         restart_with_systemd
-      elif pm2_process_exists; then
-        restart_with_pm2
       else
         fail "No known process manager found. Set SERVICE_MANAGER=systemd, SERVICE_MANAGER=pm2, SERVICE_MANAGER=none, or RESTART_CMD='your restart command'."
       fi

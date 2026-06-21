@@ -4,7 +4,7 @@ import { createApp } from './routes.js';
 import { Scheduler } from './scheduler.js';
 
 const host = process.env.HOST || '127.0.0.1';
-const port = Number(process.env.PORT || 8787);
+const port = Number(process.env.PORT || 3642);
 const config = loadConfig();
 const db = createDatabase();
 const app = createApp(db, config);
