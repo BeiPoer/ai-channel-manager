@@ -67,6 +67,8 @@ interface OwnedSiteUsageRecord {
   id: string;
   request_id: string | null;
   model: string | null;
+  account_id: string | null;
+  account_name: string | null;
   group_id: string | null;
   group_name: string | null;
   first_token_ms: number | null;
@@ -78,13 +80,15 @@ interface OwnedSiteLatencySample {
   id: string;
   request_id: string | null;
   model: string | null;
+  account_id: string | null;
+  account_name: string | null;
   group_id: string | null;
   group_name: string | null;
   first_token_ms: number;
   created_at: string;
 }
 
-interface SlowSampleGroupCount {
+interface SlowSampleAccountCount {
   name: string;
   count: number;
 }
@@ -324,6 +328,44 @@ function objectString(value: unknown, keys: string[]): string | null {
     if (text) return text;
   }
   return null;
+}
+
+function usageAccountId(record: Record<string, unknown>): string | null {
+  return (
+    optionalString(
+      record.account_id ??
+        record.accountId ??
+        record.upstream_account_id ??
+        record.upstreamAccountId ??
+        record.upstream_id ??
+        record.upstreamId ??
+        record.channel_id ??
+        record.channelId
+    ) ||
+    objectString(record.account, ['id', 'account_id', 'accountId']) ||
+    objectString(record.upstream_account ?? record.upstreamAccount, ['id', 'account_id', 'accountId']) ||
+    objectString(record.upstream, ['id', 'account_id', 'accountId', 'upstream_id', 'upstreamId']) ||
+    objectString(record.channel, ['id', 'account_id', 'accountId', 'channel_id', 'channelId'])
+  );
+}
+
+function usageAccountName(record: Record<string, unknown>): string | null {
+  return (
+    optionalString(
+      record.account_name ??
+        record.accountName ??
+        record.upstream_account_name ??
+        record.upstreamAccountName ??
+        record.upstream_name ??
+        record.upstreamName ??
+        record.channel_name ??
+        record.channelName
+    ) ||
+    objectString(record.account, ['name', 'account_name', 'accountName', 'title', 'label', 'id']) ||
+    objectString(record.upstream_account ?? record.upstreamAccount, ['name', 'account_name', 'accountName', 'title', 'label', 'id']) ||
+    objectString(record.upstream, ['name', 'account_name', 'accountName', 'title', 'label', 'id']) ||
+    objectString(record.channel, ['name', 'account_name', 'accountName', 'title', 'label', 'id'])
+  );
 }
 
 function asPage(value: unknown, fallbackPage: number, fallbackPageSize: number): PaginatedResult<Record<string, unknown>> {
@@ -1675,6 +1717,8 @@ function normalizeUsageRecord(record: Record<string, unknown>): OwnedSiteUsageRe
     id,
     request_id: optionalString(record.request_id ?? record.requestId),
     model: optionalString(record.model),
+    account_id: usageAccountId(record),
+    account_name: usageAccountName(record),
     group_id: optionalString(record.group_id ?? record.groupId),
     group_name: groupName,
     first_token_ms: firstTokenNumber !== null && Number.isFinite(firstTokenNumber) ? firstTokenNumber : null,
@@ -1711,6 +1755,8 @@ function latencySample(record: OwnedSiteUsageRecord): OwnedSiteLatencySample {
     id: record.id,
     request_id: record.request_id,
     model: record.model,
+    account_id: record.account_id,
+    account_name: record.account_name,
     group_id: record.group_id,
     group_name: record.group_name,
     first_token_ms: record.first_token_ms || 0,
@@ -1727,16 +1773,14 @@ function topLatencySamples(samples: OwnedSiteLatencySample[]): OwnedSiteLatencyS
   return [...samples].sort((left, right) => right.first_token_ms - left.first_token_ms).slice(0, 10);
 }
 
-function slowSampleGroupLabel(sample: OwnedSiteLatencySample, task: OwnedSiteAutomationTaskRecord): string {
-  if (sample.group_name) return sample.group_name;
-  if (sample.group_id && sample.group_id === task.target_group_id && task.target_group_name) return task.target_group_name;
-  return sample.group_id || task.target_group_name || task.target_group_id || '未知分组';
+function slowSampleAccountLabel(sample: OwnedSiteLatencySample): string {
+  return sample.account_name || sample.account_id || '未知账号';
 }
 
-function countSlowSampleGroups(samples: OwnedSiteLatencySample[], task: OwnedSiteAutomationTaskRecord): SlowSampleGroupCount[] {
+function countSlowSampleAccounts(samples: OwnedSiteLatencySample[]): SlowSampleAccountCount[] {
   const counts = new Map<string, number>();
   for (const sample of samples) {
-    const label = slowSampleGroupLabel(sample, task);
+    const label = slowSampleAccountLabel(sample);
     counts.set(label, (counts.get(label) || 0) + 1);
   }
   return [...counts.entries()]
@@ -1744,8 +1788,8 @@ function countSlowSampleGroups(samples: OwnedSiteLatencySample[], task: OwnedSit
     .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
 }
 
-function formatSlowSampleGroups(groups: SlowSampleGroupCount[]): string {
-  return groups.map((group) => `【${group.name} * ${group.count}】`).join('、');
+function formatSlowSampleAccounts(accounts: SlowSampleAccountCount[]): string {
+  return accounts.map((account) => `【${account.name} * ${account.count}】`).join('、');
 }
 
 export async function evaluateOwnedSiteFirstTokenLatencyTask(
@@ -1786,7 +1830,7 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
   }
 
   const slowSamples = samples.filter((sample) => sample.first_token_ms > latencyThresholdMs);
-  const slowSampleGroups = countSlowSampleGroups(slowSamples, task);
+  const slowSampleAccounts = countSlowSampleAccounts(slowSamples);
   const targetLabel = task.target_group_name || task.target_group_id;
   const snapshot = {
     site: sanitizeOwnedSite(site),
@@ -1805,7 +1849,7 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
     scanned_pages: scannedPages,
     sample_count: samples.length,
     slow_count: slowSamples.length,
-    slow_group_counts: slowSampleGroups,
+    slow_account_counts: slowSampleAccounts,
     samples: topLatencySamples(samples),
     slow_samples: topLatencySamples(slowSamples)
   };
@@ -1824,14 +1868,14 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
   const triggered = slowSamples.length >= breachCount;
   const maxLatency = samples.reduce((max, sample) => Math.max(max, sample.first_token_ms), 0);
   const latestSlow = slowSamples[0] || null;
-  const slowGroupSummary = formatSlowSampleGroups(slowSampleGroups);
+  const slowAccountSummary = formatSlowSampleAccounts(slowSampleAccounts);
   return {
     triggered,
     message: triggered
       ? `${site.name} 分组 ${targetLabel} 最近 ${lookbackMinutes} 分钟内近 ${sampleSize} 次请求有 ${slowSamples.length} 次首 Token 耗时超过 ${formatSeconds(
           latencyThresholdMs
         )} 秒，最大 ${formatSeconds(maxLatency)} 秒${latestSlow ? `，最近慢请求 ${formatSeconds(latestSlow.first_token_ms)} 秒` : ''}${
-          slowGroupSummary ? `，慢请求分组：${slowGroupSummary}` : ''
+          slowAccountSummary ? `，慢请求账号：${slowAccountSummary}` : ''
         }`
       : `${site.name} 分组 ${targetLabel} 首 Token 耗时未超过阈值：近 ${sampleSize} 次中 ${slowSamples.length} 次超过 ${formatSeconds(latencyThresholdMs)} 秒`,
     samples,

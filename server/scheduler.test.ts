@@ -720,10 +720,10 @@ describe('automation evaluation', () => {
           code: 0,
           data: {
             items: [
-              { id: 1, request_id: 'r1', model: 'gpt-5', group_id: 7, group: { id: 7, name: 'vip' }, first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
-              { id: 2, request_id: 'r2', model: 'gpt-5', group_id: 7, group: { id: 7, name: 'vip' }, first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
-              { id: 3, request_id: 'r3', model: 'gpt-5', group_id: 8, group: { id: 8, name: 'backup' }, first_token_ms: 5400, created_at: nowIso(new Date(now.getTime() - 150_000)) },
-              { id: 4, request_id: 'r4', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 1200, created_at: nowIso(new Date(now.getTime() - 180_000)) }
+              { id: 1, request_id: 'r1', model: 'gpt-5', account: { id: 11, name: 'acc-a' }, group_id: 7, group: { id: 7, name: 'vip' }, first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
+              { id: 2, request_id: 'r2', model: 'gpt-5', account: { id: 11, name: 'acc-a' }, group_id: 7, group: { id: 7, name: 'vip' }, first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
+              { id: 3, request_id: 'r3', model: 'gpt-5', upstream: { id: 12, name: 'acc-b' }, group_id: 8, group: { id: 8, name: 'backup' }, first_token_ms: 5400, created_at: nowIso(new Date(now.getTime() - 150_000)) },
+              { id: 4, request_id: 'r4', model: 'gpt-5', account_name: 'acc-c', group_id: 7, group_name: 'vip', first_token_ms: 1200, created_at: nowIso(new Date(now.getTime() - 180_000)) }
             ],
             total: 4,
             page: 1,
@@ -775,13 +775,13 @@ describe('automation evaluation', () => {
     expect(alert.before_status).toBeNull();
     expect(alert.after_status).toBe('slow_first_token');
     expect(alert.message).toContain('近 4 次请求有 3 次首 Token 耗时超过 5 秒');
-    expect(alert.message).toContain('慢请求分组：【vip * 2】、【backup * 1】');
+    expect(alert.message).toContain('慢请求账号：【acc-a * 2】、【acc-b * 1】');
     expect(JSON.parse(alert.snapshot_json)).toMatchObject({
       sample_count: 4,
       slow_count: 3,
-      slow_group_counts: [
-        { name: 'vip', count: 2 },
-        { name: 'backup', count: 1 }
+      slow_account_counts: [
+        { name: 'acc-a', count: 2 },
+        { name: 'acc-b', count: 1 }
       ],
       task: {
         target_group_id: '7',
