@@ -317,6 +317,15 @@ function optionalString(value: unknown): string | null {
   return text || null;
 }
 
+function objectString(value: unknown, keys: string[]): string | null {
+  if (!isRecord(value)) return optionalString(value);
+  for (const key of keys) {
+    const text = optionalString(value[key]);
+    if (text) return text;
+  }
+  return null;
+}
+
 function asPage(value: unknown, fallbackPage: number, fallbackPageSize: number): PaginatedResult<Record<string, unknown>> {
   if (Array.isArray(value)) {
     return {
@@ -1660,7 +1669,8 @@ function normalizeUsageRecord(record: Record<string, unknown>): OwnedSiteUsageRe
   if (!createdAt) return null;
   const firstTokenValue = record.first_token_ms ?? record.firstTokenMs;
   const firstTokenNumber = firstTokenValue === null || firstTokenValue === undefined || firstTokenValue === '' ? null : Number(firstTokenValue);
-  const groupName = optionalString(record.group_name ?? record.groupName ?? record.group);
+  const groupName =
+    optionalString(record.group_name ?? record.groupName) || objectString(record.group, ['name', 'title', 'label', 'id', 'group_id', 'groupId']);
   return {
     id,
     request_id: optionalString(record.request_id ?? record.requestId),

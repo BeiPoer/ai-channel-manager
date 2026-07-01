@@ -720,9 +720,9 @@ describe('automation evaluation', () => {
           code: 0,
           data: {
             items: [
-              { id: 1, request_id: 'r1', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
-              { id: 2, request_id: 'r2', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
-              { id: 3, request_id: 'r3', model: 'gpt-5', group_id: 8, group_name: 'backup', first_token_ms: 5400, created_at: nowIso(new Date(now.getTime() - 150_000)) },
+              { id: 1, request_id: 'r1', model: 'gpt-5', group_id: 7, group: { id: 7, name: 'vip' }, first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
+              { id: 2, request_id: 'r2', model: 'gpt-5', group_id: 7, group: { id: 7, name: 'vip' }, first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
+              { id: 3, request_id: 'r3', model: 'gpt-5', group_id: 8, group: { id: 8, name: 'backup' }, first_token_ms: 5400, created_at: nowIso(new Date(now.getTime() - 150_000)) },
               { id: 4, request_id: 'r4', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 1200, created_at: nowIso(new Date(now.getTime() - 180_000)) }
             ],
             total: 4,
