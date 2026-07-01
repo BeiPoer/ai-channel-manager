@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDatabase, nowIso, setSetting } from './db.js';
+import { createDatabase, migrate, nowIso, setSetting } from './db.js';
 import { evaluateGroupTask, evaluateTask, runDueTasks } from './scheduler.js';
 import { filterSkippedModels, modelMatchesPattern, runDueOwnedSiteTasks, runDueOwnedSiteUpstreamMonitors } from './ownedSites.js';
 import type { AutomationTaskRecord, BalanceSnapshot } from './types.js';
@@ -706,6 +706,264 @@ describe('automation evaluation', () => {
     expect(site.last_error).toContain('upstream down');
     expect(mailer).not.toHaveBeenCalled();
     expect((db.prepare('SELECT COUNT(*) AS count FROM owned_site_alert_events').get() as { count: number }).count).toBe(0);
+    db.close();
+  });
+
+  it('alerts when owned-site group first token latency breaches the configured threshold', async () => {
+    const usageRequests: URL[] = [];
+    const now = new Date();
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers['x-api-key'] !== 'admin-key') return json(res, 401, { code: 401, message: 'bad key' });
+      if (url.pathname === '/api/v1/admin/usage') {
+        usageRequests.push(url);
+        return json(res, 200, {
+          code: 0,
+          data: {
+            items: [
+              { id: 1, request_id: 'r1', model: 'gpt-5', group_id: 7, first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
+              { id: 2, request_id: 'r2', model: 'gpt-5', group_id: 7, first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
+              { id: 3, request_id: 'r3', model: 'gpt-5', group_id: 7, first_token_ms: 1200, created_at: nowIso(new Date(now.getTime() - 180_000)) }
+            ],
+            total: 3,
+            page: 1,
+            page_size: 1000,
+            pages: 1
+          }
+        });
+      }
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const created = nowIso(now);
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, admin_api_key, status, created_at, updated_at)
+      VALUES (1, 'owned', 'sub2api', ?, 'admin-key', 'active', ?, ?)
+    `).run(baseUrl, created, created);
+    db.prepare(`
+      INSERT INTO owned_site_automation_tasks (
+        site_id, type, enabled, target_type, target_group_id, target_group_name,
+        interval_minutes, lookback_minutes, sample_size, breach_count, latency_threshold_ms,
+        cooldown_minutes, created_at, updated_at
+      ) VALUES (1, 'group_first_token_latency', 1, 'group', '7', 'vip', 1, 10, 3, 2, 5000, 0, ?, ?)
+    `).run(created, created);
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueOwnedSiteTasks(db, mailer);
+
+    expect(mailer).toHaveBeenCalledTimes(1);
+    expect(usageRequests).toHaveLength(1);
+    expect(usageRequests[0].searchParams.get('group_id')).toBe('7');
+    expect(usageRequests[0].searchParams.get('page')).toBe('1');
+    expect(usageRequests[0].searchParams.get('page_size')).toBe('1000');
+    expect(usageRequests[0].searchParams.get('sort_by')).toBe('created_at');
+    expect(usageRequests[0].searchParams.get('sort_order')).toBe('desc');
+    const alert = db.prepare('SELECT type, target_type, target_id, account_id, before_status, after_status, message, snapshot_json FROM owned_site_alert_events').get() as {
+      type: string;
+      target_type: string;
+      target_id: string;
+      account_id: string | null;
+      before_status: string | null;
+      after_status: string;
+      message: string;
+      snapshot_json: string;
+    };
+    expect(alert.type).toBe('group_first_token_latency');
+    expect(alert.target_type).toBe('group');
+    expect(alert.target_id).toBe('7');
+    expect(alert.account_id).toBeNull();
+    expect(alert.before_status).toBeNull();
+    expect(alert.after_status).toBe('slow_first_token');
+    expect(alert.message).toContain('近 3 次请求有 2 次首 Token 耗时超过 5 秒');
+    expect(JSON.parse(alert.snapshot_json)).toMatchObject({
+      sample_count: 3,
+      slow_count: 2,
+      task: {
+        target_group_id: '7',
+        sample_size: 3,
+        breach_count: 2,
+        latency_threshold_ms: 5000
+      }
+    });
+    db.close();
+  });
+
+  it('does not alert when owned-site first token samples are insufficient and ignores null first token values', async () => {
+    const now = new Date();
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers['x-api-key'] !== 'admin-key') return json(res, 401, { code: 401, message: 'bad key' });
+      if (url.pathname === '/api/v1/admin/usage') {
+        return json(res, 200, {
+          code: 0,
+          data: {
+            items: [
+              { id: 1, request_id: 'r1', group_id: 7, first_token_ms: null, created_at: nowIso(new Date(now.getTime() - 60_000)) },
+              { id: 2, request_id: 'r2', group_id: 7, created_at: nowIso(new Date(now.getTime() - 120_000)) },
+              { id: 3, request_id: 'r3', group_id: 7, first_token_ms: 9000, created_at: nowIso(new Date(now.getTime() - 180_000)) }
+            ],
+            total: 3,
+            page: 1,
+            page_size: 1000,
+            pages: 1
+          }
+        });
+      }
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const created = nowIso(now);
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, admin_api_key, status, created_at, updated_at)
+      VALUES (1, 'owned', 'sub2api', ?, 'admin-key', 'active', ?, ?)
+    `).run(baseUrl, created, created);
+    db.prepare(`
+      INSERT INTO owned_site_automation_tasks (
+        site_id, type, enabled, target_type, target_group_id, interval_minutes, lookback_minutes,
+        sample_size, breach_count, latency_threshold_ms, cooldown_minutes, created_at, updated_at
+      ) VALUES (1, 'group_first_token_latency', 1, 'group', '7', 1, 10, 2, 1, 5000, 0, ?, ?)
+    `).run(created, created);
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueOwnedSiteTasks(db, mailer);
+
+    expect(mailer).not.toHaveBeenCalled();
+    expect((db.prepare('SELECT COUNT(*) AS count FROM owned_site_alert_events').get() as { count: number }).count).toBe(0);
+    db.close();
+  });
+
+  it('honors cooldown for owned-site first token latency alerts', async () => {
+    const now = new Date();
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers['x-api-key'] !== 'admin-key') return json(res, 401, { code: 401, message: 'bad key' });
+      if (url.pathname === '/api/v1/admin/usage') {
+        return json(res, 200, {
+          code: 0,
+          data: {
+            items: [
+              { id: 1, first_token_ms: 9000, created_at: nowIso(new Date(now.getTime() - 60_000)) },
+              { id: 2, first_token_ms: 8000, created_at: nowIso(new Date(now.getTime() - 120_000)) }
+            ],
+            total: 2,
+            page: 1,
+            page_size: 1000,
+            pages: 1
+          }
+        });
+      }
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const created = nowIso(now);
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, admin_api_key, status, created_at, updated_at)
+      VALUES (1, 'owned', 'sub2api', ?, 'admin-key', 'active', ?, ?)
+    `).run(baseUrl, created, created);
+    db.prepare(`
+      INSERT INTO owned_site_automation_tasks (
+        site_id, type, enabled, target_type, target_group_id, interval_minutes, lookback_minutes,
+        sample_size, breach_count, latency_threshold_ms, cooldown_minutes, created_at, updated_at
+      ) VALUES (1, 'group_first_token_latency', 1, 'group', '7', 1, 10, 2, 1, 5000, 60, ?, ?)
+    `).run(created, created);
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueOwnedSiteTasks(db, mailer);
+    db.prepare('UPDATE owned_site_automation_tasks SET last_run_at = NULL WHERE site_id = 1').run();
+    await runDueOwnedSiteTasks(db, mailer);
+
+    expect(mailer).toHaveBeenCalledTimes(1);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM owned_site_alert_events').get() as { count: number }).count).toBe(1);
+    db.close();
+  });
+
+  it('marks owned site error when first token latency usage polling fails', async () => {
+    const baseUrl = await startMock((req, res, url) => {
+      if (req.headers['x-api-key'] !== 'admin-key') return json(res, 401, { code: 401, message: 'bad key' });
+      if (url.pathname === '/api/v1/admin/usage') return json(res, 500, { message: 'usage down' });
+      return json(res, 404, { message: 'not found' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, admin_api_key, status, created_at, updated_at)
+      VALUES (1, 'owned', 'sub2api', ?, 'admin-key', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+    db.prepare(`
+      INSERT INTO owned_site_automation_tasks (
+        site_id, type, enabled, target_type, target_group_id, interval_minutes, lookback_minutes,
+        sample_size, breach_count, latency_threshold_ms, cooldown_minutes, created_at, updated_at
+      ) VALUES (1, 'group_first_token_latency', 1, 'group', '7', 1, 10, 2, 1, 5000, 0, ?, ?)
+    `).run(now, now);
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueOwnedSiteTasks(db, mailer);
+
+    const site = db.prepare('SELECT status, last_error FROM owned_sites WHERE id = 1').get() as { status: string; last_error: string };
+    expect(site.status).toBe('error');
+    expect(site.last_error).toContain('usage down');
+    expect(mailer).not.toHaveBeenCalled();
+    expect((db.prepare('SELECT COUNT(*) AS count FROM owned_site_alert_events').get() as { count: number }).count).toBe(0);
+    db.close();
+  });
+
+  it('migrates old owned-site automation tasks and allows first token latency tasks', () => {
+    const db = createDatabase(':memory:');
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      DROP TABLE owned_site_automation_tasks;
+      CREATE TABLE owned_site_automation_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+        type TEXT NOT NULL DEFAULT 'account_error' CHECK (type IN ('account_error')),
+        enabled INTEGER NOT NULL DEFAULT 1,
+        target_type TEXT NOT NULL CHECK (target_type IN ('account', 'group')),
+        target_account_id TEXT,
+        target_account_name TEXT,
+        target_group_id TEXT,
+        target_group_name TEXT,
+        interval_minutes INTEGER NOT NULL DEFAULT 30,
+        cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+        recipients_json TEXT,
+        last_run_at TEXT,
+        last_alert_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      PRAGMA foreign_keys = ON;
+    `);
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, admin_api_key, status, created_at, updated_at)
+      VALUES (1, 'owned', 'sub2api', 'https://owned.example.com', 'admin-key', 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO owned_site_automation_tasks (
+        id, site_id, type, enabled, target_type, target_account_id, target_account_name,
+        interval_minutes, cooldown_minutes, recipients_json, last_run_at, last_alert_at, created_at, updated_at
+      ) VALUES (9, 1, 'account_error', 1, 'account', '11', 'acc-a', 1, 30, '[]', ?, ?, ?, ?)
+    `).run(now, now, now, now);
+
+    migrate(db);
+
+    const existing = db.prepare('SELECT * FROM owned_site_automation_tasks WHERE id = 9').get() as {
+      type: string;
+      lookback_minutes: number;
+      sample_size: number;
+      breach_count: number;
+      latency_threshold_ms: number;
+    };
+    expect(existing).toMatchObject({
+      type: 'account_error',
+      lookback_minutes: 10,
+      sample_size: 20,
+      breach_count: 5,
+      latency_threshold_ms: 7000
+    });
+    expect(() =>
+      db.prepare(`
+        INSERT INTO owned_site_automation_tasks (
+          site_id, type, target_type, target_group_id, created_at, updated_at
+        ) VALUES (1, 'group_first_token_latency', 'group', '7', ?, ?)
+      `).run(now, now)
+    ).not.toThrow();
     db.close();
   });
 

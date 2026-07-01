@@ -47,6 +47,7 @@ import type {
   OwnedSiteAlertEvent,
   OwnedSiteAutomationTask,
   OwnedSiteGroup,
+  OwnedSiteTaskType,
   OwnedSiteTaskTargetType,
   OwnedSiteUpstreamAccount,
   OwnedSiteUpstreamAlertSetting,
@@ -122,6 +123,7 @@ const ownedTaskTargetCopy: Record<OwnedSiteTaskTargetType, string> = {
 
 const ownedAlertTypeCopy: Record<OwnedSiteAlertEvent['type'], string> = {
   account_error: '账号错误',
+  group_first_token_latency: '首 Token 耗时',
   upstream_monitor_failed: '上游监控'
 };
 
@@ -3041,15 +3043,34 @@ function ownedTaskTargetLabel(task: OwnedSiteAutomationTask) {
   return name || id || '-';
 }
 
+function ownedTaskTypeLabel(task: OwnedSiteAutomationTask) {
+  if (task.type === 'group_first_token_latency') return '首 Token 耗时';
+  return '账号错误';
+}
+
+function ownedTaskRuleSummary(task: OwnedSiteAutomationTask) {
+  if (task.type === 'group_first_token_latency') {
+    const thresholdSeconds = task.latency_threshold_ms / 1000;
+    const thresholdLabel = Number.isInteger(thresholdSeconds) ? String(thresholdSeconds) : thresholdSeconds.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+    return `分组 ${ownedTaskTargetLabel(task)} · ${task.lookback_minutes} 分钟内近 ${task.sample_size} 次 · ${task.breach_count} 次 > ${thresholdLabel} 秒`;
+  }
+  return `${ownedTaskTargetCopy[task.target_type]} · ${ownedTaskTargetLabel(task)}`;
+}
+
 function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; onAlertsChanged: () => void | Promise<void> }) {
   const [tasks, setTasks] = useState<OwnedSiteAutomationTask[]>([]);
   const [groups, setGroups] = useState<OwnedSiteGroup[]>([]);
+  const [taskType, setTaskType] = useState<Extract<OwnedSiteTaskType, 'account_error' | 'group_first_token_latency'>>('account_error');
   const [targetType, setTargetType] = useState<OwnedSiteTaskTargetType>('account');
   const [form, setForm] = useState({
     account_id: '',
     group_id: '',
     interval_minutes: 1,
-    cooldown_minutes: 30,
+    lookback_minutes: 10,
+    sample_size: 20,
+    breach_count: 5,
+    latency_threshold_seconds: 7,
+    cooldown_minutes: 10,
     recipients: ''
   });
   const [loading, setLoading] = useState(false);
@@ -3077,18 +3098,24 @@ function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; 
     setError('');
     setMessage('');
     const selectedGroup = groups.find((group) => group.id === form.group_id);
+    const resolvedTargetType = taskType === 'group_first_token_latency' ? 'group' : targetType;
     try {
       await api.createOwnedSiteTask(site.id, {
-        target_type: targetType,
-        target_account_id: targetType === 'account' ? form.account_id.trim() : undefined,
-        target_group_id: targetType === 'group' ? form.group_id : undefined,
-        target_group_name: targetType === 'group' ? selectedGroup?.name || form.group_id : undefined,
+        type: taskType,
+        target_type: resolvedTargetType,
+        target_account_id: resolvedTargetType === 'account' ? form.account_id.trim() : undefined,
+        target_group_id: resolvedTargetType === 'group' ? form.group_id : undefined,
+        target_group_name: resolvedTargetType === 'group' ? selectedGroup?.name || form.group_id : undefined,
         interval_minutes: Number(form.interval_minutes),
+        lookback_minutes: Number(form.lookback_minutes),
+        sample_size: Number(form.sample_size),
+        breach_count: Number(form.breach_count),
+        latency_threshold_ms: Math.round(Number(form.latency_threshold_seconds) * 1000),
         cooldown_minutes: Number(form.cooldown_minutes),
         recipients: form.recipients
       });
       setForm({ ...form, account_id: '', recipients: '' });
-      setMessage('任务已创建，首次运行只建立账号状态基线');
+      setMessage(taskType === 'group_first_token_latency' ? '首 Token 耗时任务已创建' : '任务已创建，首次运行只建立账号状态基线');
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -3121,16 +3148,40 @@ function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; 
   return (
     <div className="panelGrid">
       <form className="taskForm dataPanel" onSubmit={create}>
-        <SectionHeader title="新建自动化" description="账号状态从非 error 变为 error 时发送邮件告警" icon={<Clock3 size={17} />} />
+        <SectionHeader title="新建自动化" description="按账号状态或分组首 Token 耗时发送邮件告警" icon={<Clock3 size={17} />} />
         <div className="segmented">
-          <button type="button" className={targetType === 'account' ? 'active' : ''} onClick={() => setTargetType('account')}>
-            指定账号
+          <button
+            type="button"
+            className={taskType === 'account_error' ? 'active' : ''}
+            onClick={() => {
+              setTaskType('account_error');
+              setTargetType('account');
+            }}
+          >
+            账号错误
           </button>
-          <button type="button" className={targetType === 'group' ? 'active' : ''} onClick={() => setTargetType('group')}>
-            指定分组
+          <button
+            type="button"
+            className={taskType === 'group_first_token_latency' ? 'active' : ''}
+            onClick={() => {
+              setTaskType('group_first_token_latency');
+              setTargetType('group');
+            }}
+          >
+            首 Token 耗时
           </button>
         </div>
-        {targetType === 'account' ? (
+        {taskType === 'account_error' && (
+          <div className="segmented">
+            <button type="button" className={targetType === 'account' ? 'active' : ''} onClick={() => setTargetType('account')}>
+              指定账号
+            </button>
+            <button type="button" className={targetType === 'group' ? 'active' : ''} onClick={() => setTargetType('group')}>
+              指定分组
+            </button>
+          </div>
+        )}
+        {taskType === 'account_error' && targetType === 'account' ? (
           <label>
             账号 ID
             <input required value={form.account_id} onChange={(event) => setForm({ ...form, account_id: event.target.value })} placeholder="例如 123" />
@@ -3147,6 +3198,49 @@ function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; 
               ))}
             </select>
           </label>
+        )}
+        {taskType === 'group_first_token_latency' && (
+          <div className="formGrid">
+            <label>
+              窗口分钟
+              <input
+                type="number"
+                min={1}
+                value={form.lookback_minutes}
+                onChange={(event) => setForm({ ...form, lookback_minutes: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              最近请求数
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                value={form.sample_size}
+                onChange={(event) => setForm({ ...form, sample_size: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              慢请求次数
+              <input
+                type="number"
+                min={1}
+                max={Math.max(1, form.sample_size)}
+                value={form.breach_count}
+                onChange={(event) => setForm({ ...form, breach_count: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              阈值秒
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={form.latency_threshold_seconds}
+                onChange={(event) => setForm({ ...form, latency_threshold_seconds: Number(event.target.value) })}
+              />
+            </label>
+          </div>
         )}
         <div className="formGrid">
           <label>
@@ -3168,7 +3262,11 @@ function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; 
             />
           </label>
         </div>
-        <p className="fieldHint">首次运行会保存账号状态基线，不会发送告警；只有后续从非 error 变为 error 时才触发。</p>
+        <p className="fieldHint">
+          {taskType === 'group_first_token_latency'
+            ? '只统计窗口内有首 Token 耗时的使用记录；可用样本少于最近请求数时不会告警。'
+            : '首次运行会保存账号状态基线，不会发送告警；只有后续从非 error 变为 error 时才触发。'}
+        </p>
         <label>
           收件人
           <textarea value={form.recipients} onChange={(event) => setForm({ ...form, recipients: event.target.value })} placeholder="留空使用全局默认收件人" />
@@ -3184,7 +3282,7 @@ function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; 
       <DataSection
         className="taskListPanel"
         title="任务列表"
-        description={`${site.name} 的账号错误监控规则`}
+        description={`${site.name} 的自动化监控规则`}
         icon={<Bell size={17} />}
         right={<span className="dataPill">{tasks.length} 个任务</span>}
       >
@@ -3195,10 +3293,10 @@ function OwnedSiteAutomationPanel({ site, onAlertsChanged }: { site: OwnedSite; 
             {tasks.map((task) => (
               <div className="taskItem" key={task.id}>
                 <div className="taskSummary">
-                  <span className="taskType account_error">账号错误</span>
-                  <strong>{ownedTaskTargetLabel(task)}</strong>
+                  <span className={`taskType ${task.type}`}>{ownedTaskTypeLabel(task)}</span>
+                  <strong>{ownedTaskRuleSummary(task)}</strong>
                   <p>
-                    {ownedTaskTargetCopy[task.target_type]} · 每 {task.interval_minutes} 分钟检查 · 冷却 {task.cooldown_minutes} 分钟
+                    每 {task.interval_minutes} 分钟检查 · 冷却 {task.cooldown_minutes} 分钟
                   </p>
                   <small>上次运行 {formatTime(task.last_run_at, '尚未运行')} · 上次告警 {formatTime(task.last_alert_at, '尚未告警')}</small>
                 </div>

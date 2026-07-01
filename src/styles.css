@@ -1506,6 +1506,11 @@ select {
   color: var(--cyan);
 }
 
+.taskType.group_first_token_latency {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
 .emailState {
   max-width: 100%;
   height: 24px;

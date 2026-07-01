@@ -24,6 +24,11 @@ import {
   checkOwnedSite,
   fetchOwnedSiteAccounts,
   fetchOwnedSiteGroups,
+  FIRST_TOKEN_LATENCY_DEFAULT_BREACH_COUNT,
+  FIRST_TOKEN_LATENCY_DEFAULT_COOLDOWN_MINUTES,
+  FIRST_TOKEN_LATENCY_DEFAULT_LOOKBACK_MINUTES,
+  FIRST_TOKEN_LATENCY_DEFAULT_SAMPLE_SIZE,
+  FIRST_TOKEN_LATENCY_DEFAULT_THRESHOLD_MS,
   getOwnedSiteUpstreamAlertSetting,
   getOwnedSiteUpstreamGroupMonitor,
   getOwnedSiteUpstreamMonitor,
@@ -584,10 +589,12 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const result = db.prepare(`
       INSERT INTO owned_site_automation_tasks (
         site_id, type, enabled, target_type, target_account_id, target_account_name, target_group_id, target_group_name,
-        interval_minutes, cooldown_minutes, recipients_json, created_at, updated_at
-      ) VALUES (?, 'account_error', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        interval_minutes, lookback_minutes, sample_size, breach_count, latency_threshold_ms, cooldown_minutes,
+        recipients_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
+      payload.type ?? 'account_error',
       payload.enabled ?? 1,
       targetType,
       payload.target_account_id ?? null,
@@ -595,7 +602,11 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
       payload.target_group_id ?? null,
       payload.target_group_name ?? null,
       payload.interval_minutes ?? 1,
-      payload.cooldown_minutes ?? 30,
+      payload.lookback_minutes ?? FIRST_TOKEN_LATENCY_DEFAULT_LOOKBACK_MINUTES,
+      payload.sample_size ?? FIRST_TOKEN_LATENCY_DEFAULT_SAMPLE_SIZE,
+      payload.breach_count ?? FIRST_TOKEN_LATENCY_DEFAULT_BREACH_COUNT,
+      payload.latency_threshold_ms ?? FIRST_TOKEN_LATENCY_DEFAULT_THRESHOLD_MS,
+      payload.cooldown_minutes ?? FIRST_TOKEN_LATENCY_DEFAULT_COOLDOWN_MINUTES,
       payload.recipients_json ?? JSON.stringify([]),
       now,
       now
@@ -613,17 +624,24 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
       | undefined;
     if (!existing) throw new UpstreamError('任务不存在', 404);
     const payload = normalizeOwnedSiteTaskPayload(req.body || {}, true);
+    const nextType = payload.type ?? existing.type;
     const nextTargetType = payload.target_type ?? existing.target_type;
     const nextAccountId = payload.target_account_id !== undefined ? payload.target_account_id : existing.target_account_id;
     const nextGroupId = payload.target_group_id !== undefined ? payload.target_group_id : existing.target_group_id;
-    if (nextTargetType === 'account' && !nextAccountId) throw new UpstreamError('请选择要监控的账号', 400);
+    const nextSampleSize = payload.sample_size ?? existing.sample_size;
+    const nextBreachCount = payload.breach_count ?? existing.breach_count;
+    if (nextType === 'group_first_token_latency' && nextTargetType !== 'group') throw new UpstreamError('首 Token 耗时任务只能监控指定分组', 400);
+    if (nextType === 'account_error' && nextTargetType === 'account' && !nextAccountId) throw new UpstreamError('请选择要监控的账号', 400);
     if (nextTargetType === 'group' && !nextGroupId) throw new UpstreamError('请选择要监控的分组', 400);
+    if (nextBreachCount > nextSampleSize) throw new UpstreamError('慢请求次数不能大于最近请求数', 400);
     db.prepare(`
       UPDATE owned_site_automation_tasks
-      SET enabled = ?, target_type = ?, target_account_id = ?, target_account_name = ?, target_group_id = ?, target_group_name = ?,
-          interval_minutes = ?, cooldown_minutes = ?, recipients_json = ?, updated_at = ?
+      SET type = ?, enabled = ?, target_type = ?, target_account_id = ?, target_account_name = ?, target_group_id = ?, target_group_name = ?,
+          interval_minutes = ?, lookback_minutes = ?, sample_size = ?, breach_count = ?, latency_threshold_ms = ?,
+          cooldown_minutes = ?, recipients_json = ?, updated_at = ?
       WHERE id = ? AND site_id = ?
     `).run(
+      nextType,
       payload.enabled ?? existing.enabled,
       nextTargetType,
       nextTargetType === 'account' ? nextAccountId : null,
@@ -631,6 +649,10 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
       nextTargetType === 'group' ? nextGroupId : null,
       nextTargetType === 'group' ? (payload.target_group_name !== undefined ? payload.target_group_name : existing.target_group_name) : null,
       payload.interval_minutes ?? existing.interval_minutes,
+      payload.lookback_minutes ?? existing.lookback_minutes,
+      nextSampleSize,
+      nextBreachCount,
+      payload.latency_threshold_ms ?? existing.latency_threshold_ms,
       payload.cooldown_minutes ?? existing.cooldown_minutes,
       payload.recipients_json ?? existing.recipients_json,
       nowIso(),

@@ -154,7 +154,7 @@ export function migrate(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS owned_site_automation_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
-      type TEXT NOT NULL DEFAULT 'account_error' CHECK (type IN ('account_error')),
+      type TEXT NOT NULL DEFAULT 'account_error' CHECK (type IN ('account_error', 'group_first_token_latency')),
       enabled INTEGER NOT NULL DEFAULT 1,
       target_type TEXT NOT NULL CHECK (target_type IN ('account', 'group')),
       target_account_id TEXT,
@@ -162,7 +162,11 @@ export function migrate(db: DatabaseSync): void {
       target_group_id TEXT,
       target_group_name TEXT,
       interval_minutes INTEGER NOT NULL DEFAULT 30,
-      cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+      lookback_minutes INTEGER NOT NULL DEFAULT 10,
+      sample_size INTEGER NOT NULL DEFAULT 20,
+      breach_count INTEGER NOT NULL DEFAULT 5,
+      latency_threshold_ms INTEGER NOT NULL DEFAULT 7000,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 10,
       recipients_json TEXT,
       last_run_at TEXT,
       last_alert_at TEXT,
@@ -267,6 +271,7 @@ export function migrate(db: DatabaseSync): void {
   `);
   migrateChannelTypes(db);
   migrateAutomationTaskTypes(db);
+  migrateOwnedSiteAutomationTaskLatencySchema(db);
   migrateOwnedSiteUpstreamMonitorSchema(db);
   migrateOwnedSiteUpstreamMonitorDefaults(db);
   seedExistingGroupTaskState(db);
@@ -356,6 +361,61 @@ function tableSql(db: DatabaseSync, tableName: string): string {
 
 function columnExists(db: DatabaseSync, tableName: string, columnName: string): boolean {
   return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).some((column) => column.name === columnName);
+}
+
+function migrateOwnedSiteAutomationTaskLatencySchema(db: DatabaseSync): void {
+  const sql = tableSql(db, 'owned_site_automation_tasks');
+  const hasLatencyType = sql.includes('group_first_token_latency');
+  const hasLatencyColumns = ['lookback_minutes', 'sample_size', 'breach_count', 'latency_threshold_ms'].every((column) =>
+    columnExists(db, 'owned_site_automation_tasks', column)
+  );
+  if (hasLatencyType && hasLatencyColumns) return;
+
+  const selectLookback = columnExists(db, 'owned_site_automation_tasks', 'lookback_minutes') ? 'lookback_minutes' : '10';
+  const selectSampleSize = columnExists(db, 'owned_site_automation_tasks', 'sample_size') ? 'sample_size' : '20';
+  const selectBreachCount = columnExists(db, 'owned_site_automation_tasks', 'breach_count') ? 'breach_count' : '5';
+  const selectLatencyThreshold = columnExists(db, 'owned_site_automation_tasks', 'latency_threshold_ms') ? 'latency_threshold_ms' : '7000';
+
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN;
+    CREATE TABLE owned_site_automation_tasks_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id INTEGER NOT NULL REFERENCES owned_sites(id) ON DELETE CASCADE,
+      type TEXT NOT NULL DEFAULT 'account_error' CHECK (type IN ('account_error', 'group_first_token_latency')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      target_type TEXT NOT NULL CHECK (target_type IN ('account', 'group')),
+      target_account_id TEXT,
+      target_account_name TEXT,
+      target_group_id TEXT,
+      target_group_name TEXT,
+      interval_minutes INTEGER NOT NULL DEFAULT 30,
+      lookback_minutes INTEGER NOT NULL DEFAULT 10,
+      sample_size INTEGER NOT NULL DEFAULT 20,
+      breach_count INTEGER NOT NULL DEFAULT 5,
+      latency_threshold_ms INTEGER NOT NULL DEFAULT 7000,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 10,
+      recipients_json TEXT,
+      last_run_at TEXT,
+      last_alert_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO owned_site_automation_tasks_new (
+      id, site_id, type, enabled, target_type, target_account_id, target_account_name, target_group_id, target_group_name,
+      interval_minutes, lookback_minutes, sample_size, breach_count, latency_threshold_ms, cooldown_minutes,
+      recipients_json, last_run_at, last_alert_at, created_at, updated_at
+    )
+    SELECT
+      id, site_id, type, enabled, target_type, target_account_id, target_account_name, target_group_id, target_group_name,
+      interval_minutes, ${selectLookback}, ${selectSampleSize}, ${selectBreachCount}, ${selectLatencyThreshold}, cooldown_minutes,
+      recipients_json, last_run_at, last_alert_at, created_at, updated_at
+    FROM owned_site_automation_tasks;
+    DROP TABLE owned_site_automation_tasks;
+    ALTER TABLE owned_site_automation_tasks_new RENAME TO owned_site_automation_tasks;
+    COMMIT;
+    PRAGMA foreign_keys = ON;
+  `);
 }
 
 function migrateOwnedSiteUpstreamMonitorSchema(db: DatabaseSync): void {

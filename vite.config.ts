@@ -1,6 +1,10 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
+const defaultApiPort = 3642;
+const parsedPort = Number(process.env.PORT);
+const apiPort = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : defaultApiPort;
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -8,7 +12,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8787',
+        target: `http://127.0.0.1:${apiPort}`,
         changeOrigin: true
       }
     }
@@ -18,4 +22,3 @@ export default defineConfig({
     emptyOutDir: true
   }
 });
-

@@ -3,7 +3,7 @@ export type ChannelStatus = 'active' | 'error' | 'syncing';
 export type TaskType = 'low_balance' | 'burn_rate' | 'group_added' | 'group_removed' | 'group_ratio_changed';
 export type OwnedSiteType = 'sub2api';
 export type OwnedSiteStatus = 'active' | 'error' | 'syncing';
-export type OwnedSiteTaskType = 'account_error' | 'upstream_monitor_failed';
+export type OwnedSiteTaskType = 'account_error' | 'group_first_token_latency' | 'upstream_monitor_failed';
 export type OwnedSiteTaskTargetType = 'account' | 'group';
 
 export interface Channel {
@@ -148,6 +148,10 @@ export interface OwnedSiteAutomationTask {
   target_group_id: string | null;
   target_group_name: string | null;
   interval_minutes: number;
+  lookback_minutes: number;
+  sample_size: number;
+  breach_count: number;
+  latency_threshold_ms: number;
   cooldown_minutes: number;
   recipients: string[];
   last_run_at: string | null;

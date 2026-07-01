@@ -6,6 +6,7 @@ import type {
   OwnedSiteAccountStateRecord,
   OwnedSiteAutomationTaskRecord,
   OwnedSiteRecord,
+  OwnedSiteTaskType,
   OwnedSiteTaskTargetType,
   OwnedSiteUpstreamAlertSettingRecord,
   OwnedSiteUpstreamGroupMonitorRecord,
@@ -62,10 +63,38 @@ interface OwnedSiteTaskRunCache {
   accountById: Map<string, Promise<OwnedSiteAccount | null>>;
 }
 
+interface OwnedSiteUsageRecord {
+  id: string;
+  request_id: string | null;
+  model: string | null;
+  group_id: string | null;
+  first_token_ms: number | null;
+  created_at: string;
+  raw: Record<string, unknown>;
+}
+
+interface OwnedSiteLatencySample {
+  id: string;
+  request_id: string | null;
+  model: string | null;
+  group_id: string | null;
+  first_token_ms: number;
+  created_at: string;
+}
+
 export interface OwnedSiteAlertEvaluation {
   triggered: boolean;
   message: string;
   transitions: AccountTransition[];
+  snapshot: unknown;
+}
+
+export interface OwnedSiteFirstTokenLatencyEvaluation {
+  triggered: boolean;
+  message: string;
+  samples: OwnedSiteLatencySample[];
+  slow_samples: OwnedSiteLatencySample[];
+  scanned_pages: number;
   snapshot: unknown;
 }
 
@@ -175,6 +204,15 @@ const UPSTREAM_TIMELINE_LOOKBACK_MINUTES = 120;
 const UPSTREAM_RESULT_RETENTION_HOURS = 24;
 const UPSTREAM_ALERT_FAILURE_ATTEMPTS = 3;
 const UPSTREAM_ALERT_DEDUPE_MINUTES = 60;
+export const FIRST_TOKEN_LATENCY_TASK_TYPE = 'group_first_token_latency';
+export const FIRST_TOKEN_LATENCY_DEFAULT_LOOKBACK_MINUTES = 10;
+export const FIRST_TOKEN_LATENCY_DEFAULT_SAMPLE_SIZE = 20;
+export const FIRST_TOKEN_LATENCY_DEFAULT_BREACH_COUNT = 5;
+export const FIRST_TOKEN_LATENCY_DEFAULT_THRESHOLD_MS = 7000;
+export const FIRST_TOKEN_LATENCY_DEFAULT_COOLDOWN_MINUTES = 10;
+const FIRST_TOKEN_LATENCY_MAX_SAMPLE_SIZE = 1000;
+const FIRST_TOKEN_LATENCY_MAX_SCAN_PAGES = 5;
+const FIRST_TOKEN_LATENCY_USAGE_PAGE_SIZE = 1000;
 
 export function normalizeOwnedSiteBaseUrl(value: string): string {
   const trimmed = value.trim();
@@ -1609,6 +1647,154 @@ export async function evaluateOwnedSiteTask(
   };
 }
 
+function normalizeUsageRecord(record: Record<string, unknown>): OwnedSiteUsageRecord | null {
+  const id = stringValue(record.id ?? record.ID);
+  const createdAt = stringValue(record.created_at ?? record.createdAt);
+  if (!createdAt) return null;
+  const firstTokenValue = record.first_token_ms ?? record.firstTokenMs;
+  const firstTokenNumber = firstTokenValue === null || firstTokenValue === undefined || firstTokenValue === '' ? null : Number(firstTokenValue);
+  return {
+    id,
+    request_id: optionalString(record.request_id ?? record.requestId),
+    model: optionalString(record.model),
+    group_id: optionalString(record.group_id ?? record.groupId),
+    first_token_ms: firstTokenNumber !== null && Number.isFinite(firstTokenNumber) ? firstTokenNumber : null,
+    created_at: createdAt,
+    raw: record
+  };
+}
+
+function normalizeUsagePage(payload: unknown, fallbackPage: number, fallbackPageSize: number): PaginatedResult<OwnedSiteUsageRecord> {
+  const page = asPage(payload, fallbackPage, fallbackPageSize);
+  return {
+    ...page,
+    items: page.items.map(normalizeUsageRecord).filter((item): item is OwnedSiteUsageRecord => Boolean(item))
+  };
+}
+
+async function fetchOwnedSiteUsagePage(
+  site: OwnedSiteRecord,
+  query: { page: number; page_size: number; group_id: string }
+): Promise<PaginatedResult<OwnedSiteUsageRecord>> {
+  const params = new URLSearchParams({
+    page: String(query.page),
+    page_size: String(query.page_size),
+    sort_by: 'created_at',
+    sort_order: 'desc',
+    group_id: query.group_id
+  });
+  const payload = await ownedSiteRequest(site, `/admin/usage?${params.toString()}`);
+  return normalizeUsagePage(payload, query.page, query.page_size);
+}
+
+function latencySample(record: OwnedSiteUsageRecord): OwnedSiteLatencySample {
+  return {
+    id: record.id,
+    request_id: record.request_id,
+    model: record.model,
+    group_id: record.group_id,
+    first_token_ms: record.first_token_ms || 0,
+    created_at: record.created_at
+  };
+}
+
+function formatSeconds(ms: number): string {
+  const seconds = ms / 1000;
+  return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function topLatencySamples(samples: OwnedSiteLatencySample[]): OwnedSiteLatencySample[] {
+  return [...samples].sort((left, right) => right.first_token_ms - left.first_token_ms).slice(0, 10);
+}
+
+export async function evaluateOwnedSiteFirstTokenLatencyTask(
+  site: OwnedSiteRecord,
+  task: OwnedSiteAutomationTaskRecord,
+  now = new Date()
+): Promise<OwnedSiteFirstTokenLatencyEvaluation> {
+  if (!task.target_group_id) throw new UpstreamError('首 Token 耗时任务缺少分组 ID', 400);
+  const lookbackMinutes = Math.max(1, Math.floor(numberValue(task.lookback_minutes, FIRST_TOKEN_LATENCY_DEFAULT_LOOKBACK_MINUTES)));
+  const sampleSize = Math.min(FIRST_TOKEN_LATENCY_MAX_SAMPLE_SIZE, Math.max(1, Math.floor(numberValue(task.sample_size, FIRST_TOKEN_LATENCY_DEFAULT_SAMPLE_SIZE))));
+  const breachCount = Math.min(sampleSize, Math.max(1, Math.floor(numberValue(task.breach_count, FIRST_TOKEN_LATENCY_DEFAULT_BREACH_COUNT))));
+  const latencyThresholdMs = Math.max(1, Math.floor(numberValue(task.latency_threshold_ms, FIRST_TOKEN_LATENCY_DEFAULT_THRESHOLD_MS)));
+  const cutoff = new Date(now.getTime() - lookbackMinutes * 60000);
+  const samples: OwnedSiteLatencySample[] = [];
+  let scannedPages = 0;
+  let reachedCutoff = false;
+
+  for (let page = 1; page <= FIRST_TOKEN_LATENCY_MAX_SCAN_PAGES && samples.length < sampleSize && !reachedCutoff; page += 1) {
+    const result = await fetchOwnedSiteUsagePage(site, {
+      page,
+      page_size: FIRST_TOKEN_LATENCY_USAGE_PAGE_SIZE,
+      group_id: task.target_group_id
+    });
+    scannedPages = page;
+    if (!result.items.length) break;
+    for (const record of result.items) {
+      const createdAt = new Date(record.created_at);
+      if (!Number.isFinite(createdAt.getTime())) continue;
+      if (createdAt < cutoff) {
+        reachedCutoff = true;
+        break;
+      }
+      if (record.first_token_ms === null) continue;
+      samples.push(latencySample(record));
+      if (samples.length >= sampleSize) break;
+    }
+    if (page >= result.pages) break;
+  }
+
+  const slowSamples = samples.filter((sample) => sample.first_token_ms > latencyThresholdMs);
+  const targetLabel = task.target_group_name || task.target_group_id;
+  const snapshot = {
+    site: sanitizeOwnedSite(site),
+    task: {
+      id: task.id,
+      type: task.type,
+      target_group_id: task.target_group_id,
+      target_group_name: task.target_group_name,
+      lookback_minutes: lookbackMinutes,
+      sample_size: sampleSize,
+      breach_count: breachCount,
+      latency_threshold_ms: latencyThresholdMs
+    },
+    cutoff_at: nowIso(cutoff),
+    checked_at: nowIso(now),
+    scanned_pages: scannedPages,
+    sample_count: samples.length,
+    slow_count: slowSamples.length,
+    samples: topLatencySamples(samples),
+    slow_samples: topLatencySamples(slowSamples)
+  };
+
+  if (samples.length < sampleSize) {
+    return {
+      triggered: false,
+      message: `${site.name} 分组 ${targetLabel} 最近 ${lookbackMinutes} 分钟内可用首 Token 样本不足：${samples.length}/${sampleSize}`,
+      samples,
+      slow_samples: slowSamples,
+      scanned_pages: scannedPages,
+      snapshot
+    };
+  }
+
+  const triggered = slowSamples.length >= breachCount;
+  const maxLatency = samples.reduce((max, sample) => Math.max(max, sample.first_token_ms), 0);
+  const latestSlow = slowSamples[0] || null;
+  return {
+    triggered,
+    message: triggered
+      ? `${site.name} 分组 ${targetLabel} 最近 ${lookbackMinutes} 分钟内近 ${sampleSize} 次请求有 ${slowSamples.length} 次首 Token 耗时超过 ${formatSeconds(
+          latencyThresholdMs
+        )} 秒，最大 ${formatSeconds(maxLatency)} 秒${latestSlow ? `，最近慢请求 ${formatSeconds(latestSlow.first_token_ms)} 秒` : ''}`
+      : `${site.name} 分组 ${targetLabel} 首 Token 耗时未超过阈值：近 ${sampleSize} 次中 ${slowSamples.length} 次超过 ${formatSeconds(latencyThresholdMs)} 秒`,
+    samples,
+    slow_samples: slowSamples,
+    scanned_pages: scannedPages,
+    snapshot
+  };
+}
+
 function minutesSince(value: string | null, now = new Date()): number {
   if (!value) return Infinity;
   return (now.getTime() - new Date(value).getTime()) / 60000;
@@ -1666,6 +1852,47 @@ export async function recordOwnedSiteAlert(
   db.prepare('UPDATE owned_site_automation_tasks SET last_alert_at = ?, updated_at = ? WHERE id = ?').run(nowIso(now), nowIso(now), task.id);
 }
 
+export async function recordOwnedSiteFirstTokenLatencyAlert(
+  db: DatabaseSync,
+  site: OwnedSiteRecord,
+  task: OwnedSiteAutomationTaskRecord,
+  evaluation: OwnedSiteFirstTokenLatencyEvaluation,
+  now: Date,
+  mailer: typeof sendEmail = sendEmail
+): Promise<void> {
+  if (!evaluation.triggered) return;
+  if (minutesSince(task.last_alert_at, now) < task.cooldown_minutes) return;
+  const recipients = parseJson<string[]>(task.recipients_json, []);
+  const fallbackRecipients = getEmailSettings(db).default_recipients;
+  let emailSent = 0;
+  let emailError: string | null = null;
+  try {
+    await mailer(db, recipients.length ? recipients : fallbackRecipients, 'AI 自有站点首 Token 耗时预警', evaluation.message);
+    emailSent = 1;
+  } catch (error) {
+    emailError = (error as Error).message;
+  }
+
+  db.prepare(`
+    INSERT INTO owned_site_alert_events (
+      site_id, task_id, type, target_type, target_id, account_id, account_name, site_name, message,
+      before_status, after_status, snapshot_json, email_sent, email_error, created_at
+    ) VALUES (?, ?, ?, 'group', ?, NULL, NULL, ?, ?, NULL, 'slow_first_token', ?, ?, ?, ?)
+  `).run(
+    site.id,
+    task.id,
+    task.type,
+    task.target_group_id,
+    site.name,
+    evaluation.message,
+    JSON.stringify(evaluation.snapshot),
+    emailSent,
+    emailError,
+    nowIso(now)
+  );
+  db.prepare('UPDATE owned_site_automation_tasks SET last_alert_at = ?, updated_at = ? WHERE id = ?').run(nowIso(now), nowIso(now), task.id);
+}
+
 export async function runDueOwnedSiteTasks(db: DatabaseSync, mailer: typeof sendEmail = sendEmail): Promise<void> {
   const rows = db.prepare(`
     SELECT t.*, s.name AS site_name
@@ -1686,6 +1913,16 @@ export async function runDueOwnedSiteTasks(db: DatabaseSync, mailer: typeof send
       cacheBySite.set(site.id, cache);
     }
     try {
+      if (row.type === FIRST_TOKEN_LATENCY_TASK_TYPE) {
+        const evaluation = await evaluateOwnedSiteFirstTokenLatencyTask(site, row, now);
+        db.prepare(`
+          UPDATE owned_sites
+          SET status = 'active', last_check_at = ?, last_error = NULL, updated_at = ?
+          WHERE id = ?
+        `).run(nowIso(now), nowIso(now), site.id);
+        await recordOwnedSiteFirstTokenLatencyAlert(db, site, row, evaluation, now, mailer);
+        continue;
+      }
       const evaluation = await evaluateOwnedSiteTask(db, site, row, cache);
       db.prepare(`
         UPDATE owned_sites
@@ -1707,6 +1944,7 @@ export function normalizeOwnedSiteTaskPayload(
   body: Record<string, unknown>,
   partial = false
 ): {
+  type?: OwnedSiteTaskType;
   enabled?: number;
   target_type?: OwnedSiteTaskTargetType;
   target_account_id?: string | null;
@@ -1714,16 +1952,28 @@ export function normalizeOwnedSiteTaskPayload(
   target_group_id?: string | null;
   target_group_name?: string | null;
   interval_minutes?: number;
+  lookback_minutes?: number;
+  sample_size?: number;
+  breach_count?: number;
+  latency_threshold_ms?: number;
   cooldown_minutes?: number;
   recipients_json?: string;
 } {
-  const type = stringValue(body.type || 'account_error');
-  if (type !== 'account_error') throw new UpstreamError('任务类型无效', 400);
+  const typeValue = body.type === undefined ? (partial ? undefined : 'account_error') : stringValue(body.type);
+  if (typeValue !== undefined && typeValue !== 'account_error' && typeValue !== FIRST_TOKEN_LATENCY_TASK_TYPE) throw new UpstreamError('任务类型无效', 400);
   const targetType = body.target_type === undefined ? undefined : stringValue(body.target_type);
   if (!partial && targetType !== 'account' && targetType !== 'group') throw new UpstreamError('任务目标类型无效', 400);
   if (partial && targetType !== undefined && targetType !== 'account' && targetType !== 'group') throw new UpstreamError('任务目标类型无效', 400);
 
+  const sampleSize =
+    body.sample_size === undefined
+      ? undefined
+      : Math.min(FIRST_TOKEN_LATENCY_MAX_SAMPLE_SIZE, Math.max(1, Math.floor(numberValue(body.sample_size, FIRST_TOKEN_LATENCY_DEFAULT_SAMPLE_SIZE))));
+  const breachCount =
+    body.breach_count === undefined ? undefined : Math.max(1, Math.floor(numberValue(body.breach_count, FIRST_TOKEN_LATENCY_DEFAULT_BREACH_COUNT)));
+
   const payload = {
+    type: typeValue as OwnedSiteTaskType | undefined,
     enabled: body.enabled === undefined ? undefined : Boolean(body.enabled) ? 1 : 0,
     target_type: targetType as OwnedSiteTaskTargetType | undefined,
     target_account_id: body.target_account_id === undefined ? undefined : stringValue(body.target_account_id) || null,
@@ -1731,11 +1981,25 @@ export function normalizeOwnedSiteTaskPayload(
     target_group_id: body.target_group_id === undefined ? undefined : stringValue(body.target_group_id) || null,
     target_group_name: body.target_group_name === undefined ? undefined : stringValue(body.target_group_name) || null,
     interval_minutes: body.interval_minutes === undefined ? undefined : Math.max(1, numberValue(body.interval_minutes, 1)),
-    cooldown_minutes: body.cooldown_minutes === undefined ? undefined : Math.max(0, numberValue(body.cooldown_minutes, 30)),
+    lookback_minutes:
+      body.lookback_minutes === undefined ? undefined : Math.max(1, Math.floor(numberValue(body.lookback_minutes, FIRST_TOKEN_LATENCY_DEFAULT_LOOKBACK_MINUTES))),
+    sample_size: sampleSize,
+    breach_count: breachCount,
+    latency_threshold_ms:
+      body.latency_threshold_ms === undefined
+        ? undefined
+        : Math.max(1, Math.floor(numberValue(body.latency_threshold_ms, FIRST_TOKEN_LATENCY_DEFAULT_THRESHOLD_MS))),
+    cooldown_minutes:
+      body.cooldown_minutes === undefined ? undefined : Math.max(0, numberValue(body.cooldown_minutes, FIRST_TOKEN_LATENCY_DEFAULT_COOLDOWN_MINUTES)),
     recipients_json: body.recipients === undefined ? undefined : JSON.stringify(splitRecipients(body.recipients))
   };
 
+  if (payload.breach_count !== undefined && payload.sample_size !== undefined && payload.breach_count > payload.sample_size) {
+    throw new UpstreamError('慢请求次数不能大于最近请求数', 400);
+  }
   const resolvedTarget = payload.target_type;
+  if (!partial && payload.type === FIRST_TOKEN_LATENCY_TASK_TYPE && resolvedTarget !== 'group') throw new UpstreamError('首 Token 耗时任务只能监控指定分组', 400);
+  if (!partial && payload.type === 'account_error' && resolvedTarget !== 'account' && resolvedTarget !== 'group') throw new UpstreamError('任务目标类型无效', 400);
   if (!partial && resolvedTarget === 'account' && !payload.target_account_id) throw new UpstreamError('请选择要监控的账号', 400);
   if (!partial && resolvedTarget === 'group' && !payload.target_group_id) throw new UpstreamError('请选择要监控的分组', 400);
   return payload;

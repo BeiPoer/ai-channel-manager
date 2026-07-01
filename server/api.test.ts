@@ -620,6 +620,52 @@ describe('local API', () => {
       .post(`/api/owned-sites/${created.body.id}/tasks`)
       .send({ target_type: 'group', target_group_id: '9', target_group_name: 'vip', interval_minutes: 5, cooldown_minutes: 10 })
       .expect(201);
+    const defaultLatencyTask = await agent
+      .post(`/api/owned-sites/${created.body.id}/tasks`)
+      .send({ type: 'group_first_token_latency', target_type: 'group', target_group_id: '9', target_group_name: 'vip' })
+      .expect(201);
+    expect(defaultLatencyTask.body).toMatchObject({
+      type: 'group_first_token_latency',
+      target_type: 'group',
+      target_group_id: '9',
+      lookback_minutes: 10,
+      sample_size: 20,
+      breach_count: 5,
+      latency_threshold_ms: 7000,
+      cooldown_minutes: 10
+    });
+    const latencyTask = await agent
+      .post(`/api/owned-sites/${created.body.id}/tasks`)
+      .send({
+        type: 'group_first_token_latency',
+        target_type: 'group',
+        target_group_id: '9',
+        target_group_name: 'vip',
+        interval_minutes: 1,
+        lookback_minutes: 15,
+        sample_size: 12,
+        breach_count: 4,
+        latency_threshold_ms: 6500,
+        cooldown_minutes: 20
+      })
+      .expect(201);
+    expect(latencyTask.body).toMatchObject({
+      type: 'group_first_token_latency',
+      target_type: 'group',
+      target_group_id: '9',
+      lookback_minutes: 15,
+      sample_size: 12,
+      breach_count: 4,
+      latency_threshold_ms: 6500
+    });
+    await agent
+      .post(`/api/owned-sites/${created.body.id}/tasks`)
+      .send({ type: 'group_first_token_latency', target_type: 'account', target_account_id: '22' })
+      .expect(400);
+    await agent
+      .post(`/api/owned-sites/${created.body.id}/tasks`)
+      .send({ type: 'group_first_token_latency', target_type: 'group', target_group_id: '9', sample_size: 2, breach_count: 3 })
+      .expect(400);
     await agent.delete(`/api/owned-sites/${created.body.id}`).expect(204);
     const taskCount = db.prepare('SELECT COUNT(*) AS count FROM owned_site_automation_tasks').get() as { count: number };
     expect(taskCount.count).toBe(0);
