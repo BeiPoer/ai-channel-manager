@@ -68,6 +68,7 @@ interface OwnedSiteUsageRecord {
   request_id: string | null;
   model: string | null;
   group_id: string | null;
+  group_name: string | null;
   first_token_ms: number | null;
   created_at: string;
   raw: Record<string, unknown>;
@@ -78,8 +79,14 @@ interface OwnedSiteLatencySample {
   request_id: string | null;
   model: string | null;
   group_id: string | null;
+  group_name: string | null;
   first_token_ms: number;
   created_at: string;
+}
+
+interface SlowSampleGroupCount {
+  name: string;
+  count: number;
 }
 
 export interface OwnedSiteAlertEvaluation {
@@ -1653,11 +1660,13 @@ function normalizeUsageRecord(record: Record<string, unknown>): OwnedSiteUsageRe
   if (!createdAt) return null;
   const firstTokenValue = record.first_token_ms ?? record.firstTokenMs;
   const firstTokenNumber = firstTokenValue === null || firstTokenValue === undefined || firstTokenValue === '' ? null : Number(firstTokenValue);
+  const groupName = optionalString(record.group_name ?? record.groupName ?? record.group);
   return {
     id,
     request_id: optionalString(record.request_id ?? record.requestId),
     model: optionalString(record.model),
     group_id: optionalString(record.group_id ?? record.groupId),
+    group_name: groupName,
     first_token_ms: firstTokenNumber !== null && Number.isFinite(firstTokenNumber) ? firstTokenNumber : null,
     created_at: createdAt,
     raw: record
@@ -1693,6 +1702,7 @@ function latencySample(record: OwnedSiteUsageRecord): OwnedSiteLatencySample {
     request_id: record.request_id,
     model: record.model,
     group_id: record.group_id,
+    group_name: record.group_name,
     first_token_ms: record.first_token_ms || 0,
     created_at: record.created_at
   };
@@ -1705,6 +1715,27 @@ function formatSeconds(ms: number): string {
 
 function topLatencySamples(samples: OwnedSiteLatencySample[]): OwnedSiteLatencySample[] {
   return [...samples].sort((left, right) => right.first_token_ms - left.first_token_ms).slice(0, 10);
+}
+
+function slowSampleGroupLabel(sample: OwnedSiteLatencySample, task: OwnedSiteAutomationTaskRecord): string {
+  if (sample.group_name) return sample.group_name;
+  if (sample.group_id && sample.group_id === task.target_group_id && task.target_group_name) return task.target_group_name;
+  return sample.group_id || task.target_group_name || task.target_group_id || '未知分组';
+}
+
+function countSlowSampleGroups(samples: OwnedSiteLatencySample[], task: OwnedSiteAutomationTaskRecord): SlowSampleGroupCount[] {
+  const counts = new Map<string, number>();
+  for (const sample of samples) {
+    const label = slowSampleGroupLabel(sample, task);
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+}
+
+function formatSlowSampleGroups(groups: SlowSampleGroupCount[]): string {
+  return groups.map((group) => `【${group.name} * ${group.count}】`).join('、');
 }
 
 export async function evaluateOwnedSiteFirstTokenLatencyTask(
@@ -1745,6 +1776,7 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
   }
 
   const slowSamples = samples.filter((sample) => sample.first_token_ms > latencyThresholdMs);
+  const slowSampleGroups = countSlowSampleGroups(slowSamples, task);
   const targetLabel = task.target_group_name || task.target_group_id;
   const snapshot = {
     site: sanitizeOwnedSite(site),
@@ -1763,6 +1795,7 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
     scanned_pages: scannedPages,
     sample_count: samples.length,
     slow_count: slowSamples.length,
+    slow_group_counts: slowSampleGroups,
     samples: topLatencySamples(samples),
     slow_samples: topLatencySamples(slowSamples)
   };
@@ -1781,12 +1814,15 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
   const triggered = slowSamples.length >= breachCount;
   const maxLatency = samples.reduce((max, sample) => Math.max(max, sample.first_token_ms), 0);
   const latestSlow = slowSamples[0] || null;
+  const slowGroupSummary = formatSlowSampleGroups(slowSampleGroups);
   return {
     triggered,
     message: triggered
       ? `${site.name} 分组 ${targetLabel} 最近 ${lookbackMinutes} 分钟内近 ${sampleSize} 次请求有 ${slowSamples.length} 次首 Token 耗时超过 ${formatSeconds(
           latencyThresholdMs
-        )} 秒，最大 ${formatSeconds(maxLatency)} 秒${latestSlow ? `，最近慢请求 ${formatSeconds(latestSlow.first_token_ms)} 秒` : ''}`
+        )} 秒，最大 ${formatSeconds(maxLatency)} 秒${latestSlow ? `，最近慢请求 ${formatSeconds(latestSlow.first_token_ms)} 秒` : ''}${
+          slowGroupSummary ? `，慢请求分组：${slowGroupSummary}` : ''
+        }`
       : `${site.name} 分组 ${targetLabel} 首 Token 耗时未超过阈值：近 ${sampleSize} 次中 ${slowSamples.length} 次超过 ${formatSeconds(latencyThresholdMs)} 秒`,
     samples,
     slow_samples: slowSamples,

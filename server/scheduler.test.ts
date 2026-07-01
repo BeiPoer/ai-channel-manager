@@ -720,11 +720,12 @@ describe('automation evaluation', () => {
           code: 0,
           data: {
             items: [
-              { id: 1, request_id: 'r1', model: 'gpt-5', group_id: 7, first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
-              { id: 2, request_id: 'r2', model: 'gpt-5', group_id: 7, first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
-              { id: 3, request_id: 'r3', model: 'gpt-5', group_id: 7, first_token_ms: 1200, created_at: nowIso(new Date(now.getTime() - 180_000)) }
+              { id: 1, request_id: 'r1', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 6200, created_at: nowIso(new Date(now.getTime() - 60_000)) },
+              { id: 2, request_id: 'r2', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 5100, created_at: nowIso(new Date(now.getTime() - 120_000)) },
+              { id: 3, request_id: 'r3', model: 'gpt-5', group_id: 8, group_name: 'backup', first_token_ms: 5400, created_at: nowIso(new Date(now.getTime() - 150_000)) },
+              { id: 4, request_id: 'r4', model: 'gpt-5', group_id: 7, group_name: 'vip', first_token_ms: 1200, created_at: nowIso(new Date(now.getTime() - 180_000)) }
             ],
-            total: 3,
+            total: 4,
             page: 1,
             page_size: 1000,
             pages: 1
@@ -744,7 +745,7 @@ describe('automation evaluation', () => {
         site_id, type, enabled, target_type, target_group_id, target_group_name,
         interval_minutes, lookback_minutes, sample_size, breach_count, latency_threshold_ms,
         cooldown_minutes, created_at, updated_at
-      ) VALUES (1, 'group_first_token_latency', 1, 'group', '7', 'vip', 1, 10, 3, 2, 5000, 0, ?, ?)
+      ) VALUES (1, 'group_first_token_latency', 1, 'group', '7', 'vip', 1, 10, 4, 2, 5000, 0, ?, ?)
     `).run(created, created);
     const mailer = vi.fn(async () => 'ok');
 
@@ -773,13 +774,18 @@ describe('automation evaluation', () => {
     expect(alert.account_id).toBeNull();
     expect(alert.before_status).toBeNull();
     expect(alert.after_status).toBe('slow_first_token');
-    expect(alert.message).toContain('近 3 次请求有 2 次首 Token 耗时超过 5 秒');
+    expect(alert.message).toContain('近 4 次请求有 3 次首 Token 耗时超过 5 秒');
+    expect(alert.message).toContain('慢请求分组：【vip * 2】、【backup * 1】');
     expect(JSON.parse(alert.snapshot_json)).toMatchObject({
-      sample_count: 3,
-      slow_count: 2,
+      sample_count: 4,
+      slow_count: 3,
+      slow_group_counts: [
+        { name: 'vip', count: 2 },
+        { name: 'backup', count: 1 }
+      ],
       task: {
         target_group_id: '7',
-        sample_size: 3,
+        sample_size: 4,
         breach_count: 2,
         latency_threshold_ms: 5000
       }
