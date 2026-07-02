@@ -1872,11 +1872,9 @@ export async function evaluateOwnedSiteFirstTokenLatencyTask(
   return {
     triggered,
     message: triggered
-      ? `${site.name} 分组 ${targetLabel} 最近 ${lookbackMinutes} 分钟内近 ${sampleSize} 次请求有 ${slowSamples.length} 次首 Token 耗时超过 ${formatSeconds(
+      ? `${site.name} ${targetLabel}分组${slowAccountSummary}最近 ${lookbackMinutes} 分钟内近 ${sampleSize} 次请求有 ${slowSamples.length} 次首 Token 耗时超过 ${formatSeconds(
           latencyThresholdMs
-        )} 秒，最大 ${formatSeconds(maxLatency)} 秒${latestSlow ? `，最近慢请求 ${formatSeconds(latestSlow.first_token_ms)} 秒` : ''}${
-          slowAccountSummary ? `，慢请求账号：${slowAccountSummary}` : ''
-        }`
+        )} 秒，最大 ${formatSeconds(maxLatency)} 秒${latestSlow ? `，最近慢请求 ${formatSeconds(latestSlow.first_token_ms)} 秒` : ''}`
       : `${site.name} 分组 ${targetLabel} 首 Token 耗时未超过阈值：近 ${sampleSize} 次中 ${slowSamples.length} 次超过 ${formatSeconds(latencyThresholdMs)} 秒`,
     samples,
     slow_samples: slowSamples,

@@ -774,8 +774,8 @@ describe('automation evaluation', () => {
     expect(alert.account_id).toBeNull();
     expect(alert.before_status).toBeNull();
     expect(alert.after_status).toBe('slow_first_token');
+    expect(alert.message).toContain('vip分组【acc-a * 2】、【acc-b * 1】最近 10 分钟内');
     expect(alert.message).toContain('近 4 次请求有 3 次首 Token 耗时超过 5 秒');
-    expect(alert.message).toContain('慢请求账号：【acc-a * 2】、【acc-b * 1】');
     expect(JSON.parse(alert.snapshot_json)).toMatchObject({
       sample_count: 4,
       slow_count: 3,
