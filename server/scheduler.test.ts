@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDatabase, migrate, nowIso, setSetting } from './db.js';
+import { cleanupHistory, createDatabase, migrate, nowIso, setSetting } from './db.js';
 import { evaluateGroupTask, evaluateTask, runDueTasks } from './scheduler.js';
 import { filterSkippedModels, modelMatchesPattern, runDueOwnedSiteTasks, runDueOwnedSiteUpstreamMonitors } from './ownedSites.js';
 import type { AutomationTaskRecord, BalanceSnapshot } from './types.js';
@@ -76,6 +76,42 @@ function snapshot(id: number, balance: number, minutesAgo: number): BalanceSnaps
 }
 
 describe('automation evaluation', () => {
+  it('keeps only the latest seven days of history', () => {
+    const db = createDatabase(':memory:');
+    const now = new Date('2026-07-10T12:00:00.000Z');
+    const old = '2026-07-03T11:59:59.999Z';
+    const recent = '2026-07-03T12:00:00.000Z';
+    db.prepare(`
+      INSERT INTO channels (id, name, type, base_url, status, created_at, updated_at)
+      VALUES (1, 'channel', 'other', 'https://example.com', 'active', ?, ?)
+    `).run(recent, recent);
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, status, created_at, updated_at)
+      VALUES (1, 'site', 'sub2api', 'https://example.com', 'active', ?, ?)
+    `).run(recent, recent);
+
+    for (const timestamp of [old, recent]) {
+      db.prepare(`INSERT INTO balance_snapshots (channel_id, balance, unit, captured_at) VALUES (1, 1, 'USD', ?)`).run(timestamp);
+      db.prepare(`INSERT INTO balance_query_logs (channel_id, status, message, created_at) VALUES (1, 'success', 'ok', ?)`).run(timestamp);
+      db.prepare(`INSERT INTO alert_events (channel_id, type, message, created_at) VALUES (1, 'test', 'test', ?)`).run(timestamp);
+      db.prepare(`INSERT INTO owned_site_alert_events (site_id, type, site_name, message, created_at) VALUES (1, 'test', 'site', 'test', ?)`).run(timestamp);
+      db.prepare(`
+        INSERT INTO owned_site_upstream_monitor_results (site_id, account_id, status, checked_at)
+        VALUES (1, 'account', 'success', ?)
+      `).run(timestamp);
+    }
+
+    const result = cleanupHistory(db, now);
+
+    expect(result.total).toBe(5);
+    for (const table of Object.keys(result.deleted)) {
+      expect((db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count).toBe(1);
+    }
+    expect((db.prepare('SELECT COUNT(*) AS count FROM channels').get() as { count: number }).count).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM owned_sites').get() as { count: number }).count).toBe(1);
+    db.close();
+  });
+
   it('matches upstream monitor model wildcard patterns', () => {
     expect(modelMatchesPattern('gpt-image-1', 'gpt-image-*')).toBe(true);
     expect(modelMatchesPattern('gpt-4o', 'gpt-image-*')).toBe(false);

@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { getEmailSettings, sendEmail } from './email.js';
-import { nowIso, parseJson, parseTask, readChannelCache, readTaskState, upsertTaskState } from './db.js';
+import { cleanupHistory, nowIso, parseJson, parseTask, readChannelCache, readTaskState, upsertTaskState } from './db.js';
 import { filterGroupsByIdentifiers, filterGroupsByTokenUsage, groupList, normalizeGroups, watchedGroupIdentifiers } from './groupMonitoring.js';
 import { syncChannel } from './adapters.js';
 import { runDueOwnedSiteTasks, runDueOwnedSiteUpstreamMonitors } from './ownedSites.js';
@@ -13,6 +13,7 @@ export interface EvaluationResult {
 }
 
 const groupTaskStateKey = 'groups';
+const cleanupIntervalMs = 24 * 60 * 60 * 1000;
 
 function minutesSince(value: string | null, now = new Date()): number {
   if (!value) return Infinity;
@@ -209,6 +210,7 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private lastCleanupAt = 0;
 
   constructor(private readonly db: DatabaseSync) {}
 
@@ -227,6 +229,11 @@ export class Scheduler {
     if (this.running) return;
     this.running = true;
     try {
+      const now = Date.now();
+      if (now - this.lastCleanupAt >= cleanupIntervalMs) {
+        cleanupHistory(this.db, new Date(now));
+        this.lastCleanupAt = now;
+      }
       await runDueTasks(this.db);
       await runDueOwnedSiteTasks(this.db);
       await runDueOwnedSiteUpstreamMonitors(this.db);

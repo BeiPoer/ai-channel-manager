@@ -212,7 +212,6 @@ const MAX_MONITOR_RETRY_COUNT = 5;
 const MIN_MONITOR_INTERVAL_MINUTES = 1;
 const MAX_MONITOR_INTERVAL_MINUTES = 1440;
 const UPSTREAM_TIMELINE_LOOKBACK_MINUTES = 120;
-const UPSTREAM_RESULT_RETENTION_HOURS = 24;
 const UPSTREAM_ALERT_FAILURE_ATTEMPTS = 3;
 const UPSTREAM_ALERT_DEDUPE_MINUTES = 60;
 export const FIRST_TOKEN_LATENCY_TASK_TYPE = 'group_first_token_latency';
@@ -1312,11 +1311,6 @@ function aggregateRunStatus(results: Array<{ status: OwnedSiteUpstreamMonitorSta
   return 'success';
 }
 
-function pruneOldMonitorResults(db: DatabaseSync, now = new Date()): void {
-  const cutoff = nowIso(new Date(now.getTime() - UPSTREAM_RESULT_RETENTION_HOURS * 60 * 60000));
-  db.prepare('DELETE FROM owned_site_upstream_monitor_results WHERE checked_at < ?').run(cutoff);
-}
-
 function upstreamAlertAlreadySent(db: DatabaseSync, siteId: number, accountId: string, model: string | null, now: Date): boolean {
   const cutoff = nowIso(new Date(now.getTime() - UPSTREAM_ALERT_DEDUPE_MINUTES * 60000));
   const rows = db.prepare(`
@@ -1473,7 +1467,6 @@ export async function runOwnedSiteUpstreamMonitor(
     SET last_run_at = ?, last_status = ?, last_error = ?, last_latency_ms = ?, updated_at = ?
     WHERE id = ?
   `).run(checkedAt, status, lastError, lastLatency, checkedAt, row.id);
-  pruneOldMonitorResults(db, checkedAtDate);
   if (options.alert) {
     await maybeSendOwnedSiteUpstreamAlerts(db, site, account, resultItems, checkedAtDate, options.mailer || sendEmail);
   }

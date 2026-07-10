@@ -20,6 +20,23 @@ export function nowIso(date = new Date()): string {
   return date.toISOString();
 }
 
+const historyRetentionMs = 7 * 24 * 60 * 60 * 1000;
+const historyTables = [
+  ['balance_snapshots', 'captured_at'],
+  ['balance_query_logs', 'created_at'],
+  ['alert_events', 'created_at'],
+  ['owned_site_alert_events', 'created_at'],
+  ['owned_site_upstream_monitor_results', 'checked_at']
+] as const;
+
+export function cleanupHistory(db: DatabaseSync, now = new Date()): { cutoff: string; deleted: Record<string, number>; total: number } {
+  const cutoff = nowIso(new Date(now.getTime() - historyRetentionMs));
+  const deleted = Object.fromEntries(
+    historyTables.map(([table, column]) => [table, Number(db.prepare(`DELETE FROM ${table} WHERE ${column} < ?`).run(cutoff).changes)])
+  );
+  return { cutoff, deleted, total: Object.values(deleted).reduce((sum, count) => sum + count, 0) };
+}
+
 export function createDatabase(filename = process.env.DB_PATH || path.join(projectRoot, 'data', 'app.sqlite')): DatabaseSync {
   if (filename !== ':memory:') {
     fs.mkdirSync(path.dirname(filename), { recursive: true });
