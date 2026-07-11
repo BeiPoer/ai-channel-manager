@@ -183,6 +183,11 @@ describe('local API', () => {
 
     expect(created.body.has_password).toBe(true);
     expect(created.body.password).toBe('p');
+    expect(created.body.ignored).toBe(false);
+
+    await agent.put(`/api/channels/${created.body.id}`).send({ ignored: 'false' }).expect(400);
+    const ignored = await agent.put(`/api/channels/${created.body.id}`).send({ ignored: true }).expect(200);
+    expect(ignored.body.ignored).toBe(true);
 
     await agent
       .post(`/api/channels/${created.body.id}/tasks`)
@@ -196,6 +201,7 @@ describe('local API', () => {
     const list = await agent.get('/api/channels').expect(200);
     expect(list.body[0].has_password).toBe(true);
     expect(list.body[0].password).toBe('p');
+    expect(list.body[0].ignored).toBe(true);
 
     const now = new Date().toISOString();
     db.prepare(`
@@ -294,6 +300,8 @@ describe('local API', () => {
         VALUES ('o', 'other', 'https://other.example.com', 'u', 'p', 'active', ?, ?)
       `).run(now, now);
     }).not.toThrow();
+    const channel = db.prepare("SELECT ignored FROM channels WHERE type = 'other'").get() as { ignored: number };
+    expect(channel.ignored).toBe(0);
     db.close();
   });
 

@@ -61,6 +61,7 @@ export function migrate(db: DatabaseSync): void {
       sub2api_access_token TEXT,
       sub2api_refresh_token TEXT,
       sub2api_token_expires_at INTEGER,
+      ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'syncing',
       last_sync_at TEXT,
       last_error TEXT,
@@ -287,6 +288,7 @@ export function migrate(db: DatabaseSync): void {
       ON owned_site_alert_events(site_id, type, account_id, after_status, created_at);
   `);
   migrateChannelTypes(db);
+  migrateChannelIgnored(db);
   migrateAutomationTaskTypes(db);
   migrateOwnedSiteAutomationTaskLatencySchema(db);
   migrateOwnedSiteUpstreamMonitorSchema(db);
@@ -297,6 +299,7 @@ export function migrate(db: DatabaseSync): void {
 function migrateChannelTypes(db: DatabaseSync): void {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channels'").get() as { sql: string } | undefined;
   if (!table?.sql || table.sql.includes("'other'")) return;
+  const ignored = columnExists(db, 'channels', 'ignored') ? 'ignored' : '0';
   db.exec(`
     PRAGMA foreign_keys = OFF;
     BEGIN;
@@ -312,6 +315,7 @@ function migrateChannelTypes(db: DatabaseSync): void {
       sub2api_access_token TEXT,
       sub2api_refresh_token TEXT,
       sub2api_token_expires_at INTEGER,
+      ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
       status TEXT NOT NULL DEFAULT 'syncing',
       last_sync_at TEXT,
       last_error TEXT,
@@ -321,12 +325,12 @@ function migrateChannelTypes(db: DatabaseSync): void {
     INSERT INTO channels_new (
       id, name, type, base_url, username, password, newapi_access_token, newapi_user_id,
       sub2api_access_token, sub2api_refresh_token, sub2api_token_expires_at,
-      status, last_sync_at, last_error, created_at, updated_at
+      ignored, status, last_sync_at, last_error, created_at, updated_at
     )
     SELECT
       id, name, type, base_url, username, password, newapi_access_token, newapi_user_id,
       sub2api_access_token, sub2api_refresh_token, sub2api_token_expires_at,
-      status, last_sync_at, last_error, created_at, updated_at
+      ${ignored}, status, last_sync_at, last_error, created_at, updated_at
     FROM channels;
     DROP TABLE channels;
     ALTER TABLE channels_new RENAME TO channels;
@@ -433,6 +437,12 @@ function migrateOwnedSiteAutomationTaskLatencySchema(db: DatabaseSync): void {
     COMMIT;
     PRAGMA foreign_keys = ON;
   `);
+}
+
+function migrateChannelIgnored(db: DatabaseSync): void {
+  if (!columnExists(db, 'channels', 'ignored')) {
+    db.prepare('ALTER TABLE channels ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))').run();
+  }
 }
 
 function migrateOwnedSiteUpstreamMonitorSchema(db: DatabaseSync): void {
@@ -584,6 +594,7 @@ export function sanitizeChannel(channel: ChannelRecord): SafeChannel {
     password: channel.password,
     newapi_access_token: channel.newapi_access_token,
     newapi_user_id: channel.newapi_user_id,
+    ignored: Boolean(channel.ignored),
     status: channel.status,
     last_sync_at: channel.last_sync_at,
     last_error: channel.last_error,

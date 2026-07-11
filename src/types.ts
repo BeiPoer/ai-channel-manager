@@ -15,6 +15,7 @@ export interface Channel {
   password: string | null;
   newapi_access_token: string | null;
   newapi_user_id: string | null;
+  ignored: boolean;
   status: ChannelStatus;
   last_sync_at: string | null;
   last_error: string | null;

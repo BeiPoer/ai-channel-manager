@@ -157,6 +157,7 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
     JOIN channels c ON c.id = t.channel_id
     WHERE t.enabled = 1
       AND c.type <> 'other'
+      AND c.ignored = 0
   `).all() as unknown as Array<AutomationTaskRecord & { channel_name: string; channel_type: ChannelType }>;
   const now = new Date();
   const dueRows = rows.filter((row) => minutesSince(row.last_run_at, now) >= row.interval_minutes);

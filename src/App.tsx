@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Bell,
   CheckCircle2,
+  ChevronDown,
   CircleDollarSign,
   Clock3,
   Database,
@@ -15,6 +16,8 @@ import {
   Plus,
   Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   LogOut,
   RefreshCw,
   Search,
@@ -836,8 +839,10 @@ function ChannelSummaryPanel({
   refreshingId,
   onRefreshAll,
   onRefresh,
+  onToggleIgnored,
   onOpen,
-  onAdd
+  onAdd,
+  updatingIgnoredId
 }: {
   channels: Channel[];
   overviews: Record<number, Overview>;
@@ -847,10 +852,92 @@ function ChannelSummaryPanel({
   refreshingId: number | null;
   onRefreshAll: () => void;
   onRefresh: (channel: Channel) => void;
+  onToggleIgnored: (channel: Channel) => void;
   onOpen: (channel: Channel) => void;
   onAdd: () => void;
+  updatingIgnoredId: number | null;
 }) {
   const hasData = Object.keys(overviews).length > 0;
+  const activeChannels = channels.filter((channel) => !channel.ignored);
+  const ignoredChannels = channels.filter((channel) => channel.ignored);
+
+  function renderCards(items: Channel[]) {
+    return (
+      <div className="summaryGrid">
+        {items.map((channel) => {
+          const overview = overviews[channel.id];
+          const tokenRows = overview ? asRows(overview.tokens) : [];
+          const ratios = overview ? groupRatioLookup(overview.groups) : new Map<string, number>();
+          const syncing = refreshing || refreshingId === channel.id;
+
+          return (
+            <article className={`summaryCard ${channel.ignored ? 'ignored' : ''}`} key={channel.id}>
+              <div className="summaryCardHeader">
+                <div className="summaryCardTitle">
+                  <button type="button" onClick={() => onOpen(channel)} title="查看渠道详情">
+                    {channel.name}
+                  </button>
+                  <div>
+                    <TypeBadge type={channel.type} />
+                    <StatusBadge status={channel.status} />
+                  </div>
+                </div>
+                <div className="summaryCardActions">
+                  {!channel.ignored && channel.type !== 'other' && (
+                    <button
+                      className="iconButton"
+                      onClick={() => onRefresh(channel)}
+                      disabled={syncing || loading}
+                      aria-label={`刷新渠道 ${channel.name}`}
+                      title="刷新渠道"
+                    >
+                      <RefreshCw size={16} className={syncing ? 'spin' : ''} />
+                    </button>
+                  )}
+                  <button
+                    className="iconButton"
+                    onClick={() => onToggleIgnored(channel)}
+                    disabled={updatingIgnoredId === channel.id}
+                    aria-label={`${channel.ignored ? '取消忽略' : '忽略'}渠道 ${channel.name}`}
+                    title={channel.ignored ? '取消忽略' : '忽略渠道'}
+                  >
+                    {channel.ignored ? <Eye size={16} /> : <EyeOff size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="summaryBalance">
+                <span>当前余额</span>
+                <strong>{formatNumber(overview?.latest_snapshot?.balance)}</strong>
+                <small>最近同步 {formatShortTime(channel.last_sync_at)}</small>
+              </div>
+
+              <div className="summaryTokens">
+                <div className="summaryTokensHeader">
+                  <span>令牌</span>
+                  <span>当前倍率</span>
+                </div>
+                {tokenRows.length ? (
+                  tokenRows.slice(0, 4).map((row, index) => {
+                    const name = valuePreview(row.name ?? row.Name ?? row.title ?? row.id ?? row.ID);
+                    return (
+                      <div className="summaryTokenRow" key={`${channel.id}-${tokenIdOf(row) ?? index}`}>
+                        <span title={name}>{name}</span>
+                        <strong>{tokenGroupRatioLabel(channel.type, row, ratios)}</strong>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p>{errors[channel.id] || '暂无令牌缓存'}</p>
+                )}
+                {tokenRows.length > 4 && <small>另有 {tokenRows.length - 4} 个令牌，请进入详情查看</small>}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <section className="summaryPage">
@@ -859,7 +946,7 @@ function ChannelSummaryPanel({
           <h2>渠道汇总</h2>
           <p>集中查看所有上游渠道的余额、令牌和当前倍率。</p>
         </div>
-        <button className="ghostButton" onClick={onRefreshAll} disabled={refreshing || loading || !channels.some((channel) => channel.type !== 'other')}>
+        <button className="ghostButton" onClick={onRefreshAll} disabled={refreshing || loading || !activeChannels.some((channel) => channel.type !== 'other')}>
           <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
           刷新全部
         </button>
@@ -879,67 +966,21 @@ function ChannelSummaryPanel({
       ) : loading && !hasData ? (
         <LoadingState label="正在加载渠道汇总" />
       ) : (
-        <div className="summaryGrid">
-          {channels.map((channel) => {
-            const overview = overviews[channel.id];
-            const tokenRows = overview ? asRows(overview.tokens) : [];
-            const ratios = overview ? groupRatioLookup(overview.groups) : new Map<string, number>();
-            const syncing = refreshing || refreshingId === channel.id;
-
-            return (
-              <article className="summaryCard" key={channel.id}>
-                <div className="summaryCardHeader">
-                  <div className="summaryCardTitle">
-                    <button type="button" onClick={() => onOpen(channel)} title="查看渠道详情">
-                      {channel.name}
-                    </button>
-                    <div>
-                      <TypeBadge type={channel.type} />
-                      <StatusBadge status={channel.status} />
-                    </div>
-                  </div>
-                  {channel.type !== 'other' && (
-                    <button
-                      className="iconButton"
-                      onClick={() => onRefresh(channel)}
-                      disabled={syncing || loading}
-                      aria-label={`刷新渠道 ${channel.name}`}
-                      title="刷新渠道"
-                    >
-                      <RefreshCw size={16} className={syncing ? 'spin' : ''} />
-                    </button>
-                  )}
-                </div>
-
-                <div className="summaryBalance">
-                  <span>当前余额</span>
-                  <strong>{formatNumber(overview?.latest_snapshot?.balance)}</strong>
-                  <small>最近同步 {formatShortTime(channel.last_sync_at)}</small>
-                </div>
-
-                <div className="summaryTokens">
-                  <div className="summaryTokensHeader">
-                    <span>令牌</span>
-                    <span>当前倍率</span>
-                  </div>
-                  {tokenRows.length ? (
-                    tokenRows.slice(0, 4).map((row, index) => {
-                      const name = valuePreview(row.name ?? row.Name ?? row.title ?? row.id ?? row.ID);
-                      return (
-                        <div className="summaryTokenRow" key={`${channel.id}-${tokenIdOf(row) ?? index}`}>
-                          <span title={name}>{name}</span>
-                          <strong>{tokenGroupRatioLabel(channel.type, row, ratios)}</strong>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <p>{errors[channel.id] || '暂无令牌缓存'}</p>
-                  )}
-                  {tokenRows.length > 4 && <small>另有 {tokenRows.length - 4} 个令牌，请进入详情查看</small>}
-                </div>
-              </article>
-            );
-          })}
+        <div className="channelGroups summaryGroups">
+          <details className="channelGroup" open>
+            <summary>
+              <span>使用中的渠道 <small>{activeChannels.length}</small></span>
+              <ChevronDown size={16} />
+            </summary>
+            {activeChannels.length ? renderCards(activeChannels) : <p className="channelGroupEmpty">暂无使用中的渠道</p>}
+          </details>
+          <details className="channelGroup">
+            <summary>
+              <span>已忽略的渠道 <small>{ignoredChannels.length}</small></span>
+              <ChevronDown size={16} />
+            </summary>
+            {ignoredChannels.length ? renderCards(ignoredChannels) : <p className="channelGroupEmpty">暂无已忽略的渠道</p>}
+          </details>
         </div>
       )}
     </section>
@@ -3836,6 +3877,7 @@ export default function App() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryRefreshing, setSummaryRefreshing] = useState(false);
   const [summaryRefreshingId, setSummaryRefreshingId] = useState<number | null>(null);
+  const [updatingIgnoredId, setUpdatingIgnoredId] = useState<number | null>(null);
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [balanceLogsRefreshKey, setBalanceLogsRefreshKey] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -3849,11 +3891,13 @@ export default function App() {
     () => channels.filter((channel) => `${channel.name} ${channel.base_url} ${channel.username || ''}`.toLowerCase().includes(query.toLowerCase())),
     [channels, query]
   );
+  const activeFiltered = filtered.filter((channel) => !channel.ignored);
+  const ignoredFiltered = filtered.filter((channel) => channel.ignored);
   const channelStats = useMemo(
     () => ({
-      active: channels.filter((channel) => channel.status === 'active').length,
-      syncing: channels.filter((channel) => channel.status === 'syncing').length,
-      error: channels.filter((channel) => channel.status === 'error').length
+      active: channels.filter((channel) => !channel.ignored && channel.status === 'active').length,
+      syncing: channels.filter((channel) => !channel.ignored && channel.status === 'syncing').length,
+      error: channels.filter((channel) => !channel.ignored && channel.status === 'error').length
     }),
     [channels]
   );
@@ -4040,7 +4084,7 @@ export default function App() {
   }
 
   async function refreshAllChannels() {
-    const actionable = channels.filter((channel) => channel.type !== 'other');
+    const actionable = channels.filter((channel) => !channel.ignored && channel.type !== 'other');
     if (!actionable.length) return;
     setSummaryRefreshing(true);
     setError('');
@@ -4077,6 +4121,19 @@ export default function App() {
       if (list) setChannels(list);
     } finally {
       setSummaryRefreshingId(null);
+    }
+  }
+
+  async function toggleChannelIgnored(channel: Channel) {
+    setUpdatingIgnoredId(channel.id);
+    setError('');
+    try {
+      const updated = await api.updateChannel(channel.id, { ignored: !channel.ignored });
+      setChannels((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUpdatingIgnoredId(null);
     }
   }
 
@@ -4120,6 +4177,36 @@ export default function App() {
       else navigate({ module: 'channels', tab: 'overview' }, 'replace');
     }
   }, [navigate, selectedId, selectedIsRecordOnly, tab]);
+
+  function renderSidebarChannels(items: Channel[]) {
+    return items.map((channel) => (
+      <button
+        key={channel.id}
+        className={`channelItem ${channel.id === selectedId ? 'selected' : ''}`}
+        onClick={() => navigate({ module: 'channels', channelId: channel.id, tab })}
+      >
+        <span className={`channelRailMark ${channel.status}`} />
+        <span className="channelMain">
+          <span className="channelTitleRow">
+            <strong>{channel.name}</strong>
+            <TypeBadge type={channel.type} />
+          </span>
+          <small className="channelUrl">{channel.base_url}</small>
+          <span className="channelMeta">
+            <span>
+              <Clock3 size={12} />
+              {formatShortTime(channel.last_sync_at)}
+            </span>
+            <span>
+              <KeyRound size={12} />
+              {credentialLabel(channel)}
+            </span>
+          </span>
+        </span>
+        <StatusBadge status={channel.status} />
+      </button>
+    ));
+  }
 
   if (authState === 'checking') {
     return (
@@ -4214,34 +4301,30 @@ export default function App() {
         </button>
 
         <div className="channelList">
-          {filtered.map((channel) => (
-            <button
-              key={channel.id}
-              className={`channelItem ${channel.id === selectedId ? 'selected' : ''}`}
-              onClick={() => navigate({ module: 'channels', channelId: channel.id, tab })}
-            >
-              <span className={`channelRailMark ${channel.status}`} />
-              <span className="channelMain">
-                <span className="channelTitleRow">
-                  <strong>{channel.name}</strong>
-                  <TypeBadge type={channel.type} />
-                </span>
-                <small className="channelUrl">{channel.base_url}</small>
-                <span className="channelMeta">
-                  <span>
-                    <Clock3 size={12} />
-                    {formatShortTime(channel.last_sync_at)}
-                  </span>
-                  <span>
-                    <KeyRound size={12} />
-                    {credentialLabel(channel)}
-                  </span>
-                </span>
-              </span>
-              <StatusBadge status={channel.status} />
-            </button>
-          ))}
-          {!filtered.length && <EmptyPanel icon={<Database size={24} />} title={channels.length ? '没有匹配的渠道' : '暂无渠道'} />}
+          {filtered.length ? (
+            <div className="channelGroups">
+              <details className="channelGroup" open>
+                <summary>
+                  <span>使用中的渠道 <small>{activeFiltered.length}</small></span>
+                  <ChevronDown size={16} />
+                </summary>
+                <div className="channelGroupItems">
+                  {activeFiltered.length ? renderSidebarChannels(activeFiltered) : <p className="channelGroupEmpty">暂无使用中的渠道</p>}
+                </div>
+              </details>
+              <details className="channelGroup">
+                <summary>
+                  <span>已忽略的渠道 <small>{ignoredFiltered.length}</small></span>
+                  <ChevronDown size={16} />
+                </summary>
+                <div className="channelGroupItems">
+                  {ignoredFiltered.length ? renderSidebarChannels(ignoredFiltered) : <p className="channelGroupEmpty">暂无已忽略的渠道</p>}
+                </div>
+              </details>
+            </div>
+          ) : (
+            <EmptyPanel icon={<Database size={24} />} title={channels.length ? '没有匹配的渠道' : '暂无渠道'} />
+          )}
         </div>
       </aside>
 
@@ -4360,8 +4443,10 @@ export default function App() {
               refreshingId={summaryRefreshingId}
               onRefreshAll={() => void refreshAllChannels()}
               onRefresh={(channel) => void refreshSummaryChannel(channel)}
+              onToggleIgnored={(channel) => void toggleChannelIgnored(channel)}
               onOpen={(channel) => navigate({ module: 'channels', channelId: channel.id, tab: 'overview' })}
               onAdd={() => setChannelModal('new')}
+              updatingIgnoredId={updatingIgnoredId}
             />
           </>
         )}

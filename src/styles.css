@@ -329,6 +329,77 @@ small,
   padding-right: 2px;
 }
 
+.channelGroups,
+.channelGroupItems {
+  display: grid;
+  min-width: 0;
+}
+
+.channelGroups {
+  gap: 10px;
+}
+
+.channelGroupItems {
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.channelGroup > summary {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 8px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  list-style: none;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.channelGroup > summary::-webkit-details-marker {
+  display: none;
+}
+
+.channelGroup > summary:hover {
+  background: var(--surface-muted);
+}
+
+.channelGroup > summary span {
+  min-width: 0;
+}
+
+.channelGroup > summary small {
+  display: inline-flex;
+  min-width: 22px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--muted);
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.channelGroup > summary svg {
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+
+.channelGroup[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.channelGroupEmpty {
+  color: var(--muted);
+  padding: 10px 9px 4px;
+  font-size: 12px;
+}
+
 .channelItem {
   position: relative;
   display: grid;
@@ -585,6 +656,22 @@ small,
   gap: 14px;
 }
 
+.summaryGroups {
+  gap: 16px;
+}
+
+.summaryGroups .channelGroup > summary {
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 11px;
+}
+
+.summaryGroups .channelGroupItems,
+.summaryGroups .summaryGrid {
+  padding-top: 12px;
+}
+
 .summaryCard {
   display: grid;
   min-width: 0;
@@ -601,9 +688,19 @@ small,
   border-color: #bfdbfe;
 }
 
+.summaryCard.ignored {
+  background: var(--surface-muted);
+}
+
 .summaryCardHeader {
   min-width: 0;
   gap: 10px;
+}
+
+.summaryCardActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
 }
 
 .summaryCardTitle {

@@ -138,6 +138,7 @@ function normalizeChannelInput(body: Record<string, unknown>, existing?: Channel
   if (type !== 'sub2api' && type !== 'newapi' && type !== 'other') throw new UpstreamError('渠道类型无效', 400);
   const baseUrl = body.base_url !== undefined ? normalizeBaseUrl(String(body.base_url)) : existing?.base_url;
   if (!baseUrl) throw new UpstreamError('站点链接不能为空', 400);
+  if (body.ignored !== undefined && typeof body.ignored !== 'boolean') throw new UpstreamError('忽略状态无效', 400);
   return {
     name: String(body.name || existing?.name || '').trim() || `${type} ${new URL(baseUrl).host}`,
     type,
@@ -148,7 +149,8 @@ function normalizeChannelInput(body: Record<string, unknown>, existing?: Channel
       body.newapi_access_token !== undefined && String(body.newapi_access_token) !== ''
         ? String(body.newapi_access_token)
         : existing?.newapi_access_token || null,
-    newapi_user_id: body.newapi_user_id !== undefined ? String(body.newapi_user_id || '').trim() || null : existing?.newapi_user_id || null
+    newapi_user_id: body.newapi_user_id !== undefined ? String(body.newapi_user_id || '').trim() || null : existing?.newapi_user_id || null,
+    ignored: body.ignored === undefined ? existing?.ignored || 0 : body.ignored ? 1 : 0
   };
 }
 
@@ -257,9 +259,9 @@ export function createApp(db: DatabaseSync, config: AppConfig): express.Express 
     const input = normalizeChannelInput(req.body || {}, existing);
     db.prepare(`
       UPDATE channels
-      SET name = ?, base_url = ?, username = ?, password = ?, newapi_access_token = ?, newapi_user_id = ?, updated_at = ?
+      SET name = ?, base_url = ?, username = ?, password = ?, newapi_access_token = ?, newapi_user_id = ?, ignored = ?, updated_at = ?
       WHERE id = ?
-    `).run(input.name, input.base_url, input.username, input.password, input.newapi_access_token, input.newapi_user_id, nowIso(), id);
+    `).run(input.name, input.base_url, input.username, input.password, input.newapi_access_token, input.newapi_user_id, input.ignored, nowIso(), id);
     if (req.body?.sync === true) await syncChannel(db, id);
     res.json(sanitizeChannel(ensureChannel(db, id)));
   }));

@@ -256,6 +256,30 @@ describe('automation evaluation', () => {
     db.close();
   });
 
+  it('skips ignored channels without syncing, evaluating or alerting', async () => {
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO channels (id, name, type, base_url, username, password, ignored, status, created_at, updated_at)
+      VALUES (1, 'ignored', 'sub2api', 'http://127.0.0.1:1', 'u', 'p', 1, 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
+      VALUES (1, 'low_balance', 1, 1, 99, 60, 0, ?, ?)
+    `).run(now, now);
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    const mailer = vi.fn(async () => 'ok');
+
+    await runDueTasks(db, mailer);
+
+    const task = db.prepare('SELECT last_run_at FROM automation_tasks WHERE channel_id = 1').get() as { last_run_at: string | null };
+    expect(syncSpy).not.toHaveBeenCalled();
+    expect(mailer).not.toHaveBeenCalled();
+    expect(task.last_run_at).toBeNull();
+    syncSpy.mockRestore();
+    db.close();
+  });
+
   it('shares one channel sync across multiple due group tasks', async () => {
     const db = createDatabase(':memory:');
     const now = nowIso();

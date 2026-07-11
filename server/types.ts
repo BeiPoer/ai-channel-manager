@@ -19,6 +19,7 @@ export interface ChannelRecord {
   sub2api_access_token: string | null;
   sub2api_refresh_token: string | null;
   sub2api_token_expires_at: number | null;
+  ignored: number;
   status: ChannelStatus;
   last_sync_at: string | null;
   last_error: string | null;
@@ -35,6 +36,7 @@ export interface SafeChannel {
   password: string | null;
   newapi_access_token: string | null;
   newapi_user_id: string | null;
+  ignored: boolean;
   status: ChannelStatus;
   last_sync_at: string | null;
   last_error: string | null;
