@@ -77,6 +77,17 @@ type GroupOption = {
   label: string;
 };
 
+type GroupRatio = {
+  defaultRate: number | null;
+  userRate: number | null;
+};
+
+type RatioDisplay = {
+  defaultLabel: string;
+  effectiveLabel: string;
+  overridden: boolean;
+};
+
 const defaultRoute: AppRoute = { module: 'home' };
 
 function readCurrentRoute(): AppRoute {
@@ -177,6 +188,7 @@ const columnLabels: Record<string, string> = {
   ratio: '倍率',
   rate: '倍率',
   rate_multiplier: '倍率',
+  user_rate_multiplier: '专属倍率',
   rpm_limit: 'RPM 限制',
   concurrency: '并发数',
   run_mode: '运行模式',
@@ -578,11 +590,21 @@ function groupRatioFrom(value: unknown): number | null {
   return null;
 }
 
-function groupRatioLookup(groups: unknown[]): Map<string, number> {
-  const ratios = new Map<string, number>();
+function userGroupRatioFrom(value: unknown): number | null {
+  if (!isRecord(value)) return null;
+  for (const field of ['user_rate_multiplier', 'userRateMultiplier', 'custom_rate_multiplier', 'customRateMultiplier']) {
+    const fieldValue = value[field];
+    const parsed = typeof fieldValue === 'number' ? fieldValue : typeof fieldValue === 'string' ? Number(fieldValue) : NaN;
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function groupRatioLookup(groups: unknown[]): Map<string, GroupRatio> {
+  const ratios = new Map<string, GroupRatio>();
   for (const group of asRows(groups)) {
-    const ratio = groupRatioFrom(group);
-    if (ratio === null) continue;
+    const ratio = { defaultRate: groupRatioFrom(group), userRate: userGroupRatioFrom(group) };
+    if (ratio.defaultRate === null && ratio.userRate === null) continue;
     for (const identifier of collectGroupIdentifiers(group)) {
       ratios.set(identifier, ratio);
     }
@@ -590,13 +612,35 @@ function groupRatioLookup(groups: unknown[]): Map<string, number> {
   return ratios;
 }
 
-function tokenGroupRatioLabel(channelType: ChannelType, row: Record<string, unknown>, ratios: Map<string, number>): string {
+function tokenGroupRatioDisplay(channelType: ChannelType, row: Record<string, unknown>, ratios: Map<string, GroupRatio>): RatioDisplay {
+  let ratio: GroupRatio | undefined;
   for (const identifier of tokenGroupIdentifiers(row, channelType)) {
-    const ratio = ratios.get(identifier);
-    if (ratio !== undefined) return formatNumber(ratio);
+    ratio = ratios.get(identifier);
+    if (ratio) break;
   }
-  const embeddedRatio = groupRatioFrom(row.group ?? row.Group);
-  return embeddedRatio === null ? '-' : formatNumber(embeddedRatio);
+  const embeddedGroup = row.group ?? row.Group;
+  const defaultRate = ratio?.defaultRate ?? groupRatioFrom(embeddedGroup);
+  const userRate = ratio?.userRate ?? userGroupRatioFrom(embeddedGroup);
+  const effectiveRate = userRate ?? defaultRate;
+  return {
+    defaultLabel: formatNumber(defaultRate),
+    effectiveLabel: formatNumber(effectiveRate),
+    overridden: defaultRate !== null && userRate !== null && defaultRate !== userRate
+  };
+}
+
+function RatioValue({ ratio }: { ratio: RatioDisplay }) {
+  const defaultText = ratio.defaultLabel === '-' ? '-' : `${ratio.defaultLabel}x`;
+  const effectiveText = ratio.effectiveLabel === '-' ? '-' : `${ratio.effectiveLabel}x`;
+  return (
+    <span
+      className={`ratioValue ${ratio.overridden ? 'overridden' : ''}`}
+      title={ratio.overridden ? `默认倍率 ${defaultText}，专属倍率 ${effectiveText}` : `当前倍率 ${effectiveText}`}
+    >
+      {ratio.overridden && <del>{defaultText}</del>}
+      <strong>{effectiveText}</strong>
+    </span>
+  );
 }
 
 function appendUniqueOption(options: GroupOption[], option: GroupOption) {
@@ -867,7 +911,7 @@ function ChannelSummaryPanel({
         {items.map((channel) => {
           const overview = overviews[channel.id];
           const tokenRows = overview ? asRows(overview.tokens) : [];
-          const ratios = overview ? groupRatioLookup(overview.groups) : new Map<string, number>();
+          const ratios = overview ? groupRatioLookup(overview.groups) : new Map<string, GroupRatio>();
           const syncing = refreshing || refreshingId === channel.id;
 
           return (
@@ -923,7 +967,7 @@ function ChannelSummaryPanel({
                     return (
                       <div className="summaryTokenRow" key={`${channel.id}-${tokenIdOf(row) ?? index}`}>
                         <span title={name}>{name}</span>
-                        <strong>{tokenGroupRatioLabel(channel.type, row, ratios)}</strong>
+                        <RatioValue ratio={tokenGroupRatioDisplay(channel.type, row, ratios)} />
                       </div>
                     );
                   })
@@ -1640,7 +1684,7 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
               const tokenId = tokenIdOf(row);
               const currentValue = currentTokenGroupValue(overview.channel.type, row);
               const disabled = !tokenId || !options.length || updatingTokenId === tokenId;
-              const ratioLabel = tokenGroupRatioLabel(overview.channel.type, row, ratios);
+              const ratio = tokenGroupRatioDisplay(overview.channel.type, row, ratios);
               const displayedOptions = currentValue
                 ? appendUniqueOption(options, { value: currentValue, label: currentValue })
                 : options;
@@ -1664,8 +1708,8 @@ function TokenTable({ overview, onTokensChanged }: { overview: Overview; onToken
                       ))}
                     </select>
                   </td>
-                  <td className="tokenRatioColumn" title={ratioLabel}>
-                    {ratioLabel}
+                  <td className="tokenRatioColumn">
+                    <RatioValue ratio={ratio} />
                   </td>
                   <td className="tokenModelsColumn">
                     <button

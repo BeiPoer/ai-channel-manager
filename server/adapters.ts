@@ -447,6 +447,16 @@ async function fetchSub2apiTokens(db: DatabaseSync, channel: ChannelRecord): Pro
   throw lastError instanceof Error ? lastError : new UpstreamError('无法读取 sub2api 令牌列表', 502);
 }
 
+function applySub2apiUserGroupRates(groups: unknown[], rates: unknown): unknown[] {
+  if (!isRecord(rates)) return groups;
+  return groups.map((group) => {
+    if (!isRecord(group)) return group;
+    const id = group.id ?? group.ID ?? group.group_id;
+    const rate = id === null || id === undefined ? null : finiteNumber(rates[String(id)]);
+    return rate === null ? group : { ...group, user_rate_multiplier: rate };
+  });
+}
+
 async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
   let profile: unknown;
   let balance: number;
@@ -460,7 +470,9 @@ async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<Sy
   }
   const balanceSnapshot: SyncResult['balanceSnapshot'] = { balance, used_balance: null, unit: 'sub2api-balance', raw: profile };
   recordBalanceQuerySuccess(db, channel.id, balanceSnapshot);
-  const groups = await sub2apiRequest(db, channel, '/groups/available');
+  const groupsPayload = await sub2apiRequest(db, channel, '/groups/available');
+  const userGroupRates = await sub2apiRequest(db, channel, '/groups/rates').catch(() => ({}));
+  const groups = applySub2apiUserGroupRates(Array.isArray(groupsPayload) ? groupsPayload : extractPage(groupsPayload).items, userGroupRates);
   const tokens = await fetchSub2apiTokens(db, channel);
   const subscriptions = {
     active: await sub2apiRequest(db, channel, '/subscriptions/active').catch((error) => ({ error: (error as Error).message })),
@@ -469,10 +481,10 @@ async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<Sy
   return {
     profile,
     balanceSnapshot,
-    groups: Array.isArray(groups) ? groups : extractPage(groups).items,
+    groups,
     tokens: tokens.items,
     subscriptions,
-    raw: { profile, groups, tokens: tokens.raw, subscriptions }
+    raw: { profile, groups: groupsPayload, userGroupRates, tokens: tokens.raw, subscriptions }
   };
 }
 

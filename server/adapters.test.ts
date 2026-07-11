@@ -34,7 +34,8 @@ describe('channel adapters', () => {
       if (url.pathname === '/api/v1/auth/login') return json(res, 200, { code: 0, data: { access_token: 'access-a', refresh_token: 'refresh-a' } });
       if (req.headers.authorization !== 'Bearer access-a') return json(res, 401, { message: 'unauthorized' });
       if (url.pathname === '/api/v1/auth/me') return json(res, 200, { code: 0, data: { id: 7, email: 'u@example.com', balance: 12.5 } });
-      if (url.pathname === '/api/v1/groups/available') return json(res, 200, { code: 0, data: [{ name: 'default' }] });
+      if (url.pathname === '/api/v1/groups/available') return json(res, 200, { code: 0, data: [{ id: 3, name: 'default', rate_multiplier: 1 }] });
+      if (url.pathname === '/api/v1/groups/rates') return json(res, 200, { code: 0, data: { 3: 0.1 } });
       if (url.pathname === '/api/v1/keys') {
         const page = Number(url.searchParams.get('page'));
         return json(res, 200, { code: 0, data: { items: page === 1 ? [{ name: 'k1' }] : [], total: 1 } });
@@ -53,9 +54,11 @@ describe('channel adapters', () => {
     await syncChannel(db, Number(result.lastInsertRowid));
 
     const snapshot = db.prepare('SELECT * FROM balance_snapshots').get() as { balance: number };
+    const groups = db.prepare("SELECT normalized_json FROM channel_cache WHERE cache_key = 'groups'").get() as { normalized_json: string };
     const tokens = db.prepare("SELECT normalized_json FROM channel_cache WHERE cache_key = 'tokens'").get() as { normalized_json: string };
     const queryLog = db.prepare('SELECT * FROM balance_query_logs').get() as { status: string; balance: number; error: string | null };
     expect(snapshot.balance).toBe(12.5);
+    expect(JSON.parse(groups.normalized_json)).toEqual([{ id: 3, name: 'default', rate_multiplier: 1, user_rate_multiplier: 0.1 }]);
     expect(JSON.parse(tokens.normalized_json)).toHaveLength(1);
     expect(queryLog).toMatchObject({ status: 'success', balance: 12.5, error: null });
     db.close();

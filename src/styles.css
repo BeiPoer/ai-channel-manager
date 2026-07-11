@@ -789,6 +789,33 @@ small,
   color: var(--text);
 }
 
+.ratioValue {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.ratioValue.overridden {
+  border-radius: 6px;
+  background: var(--success-soft);
+  color: var(--success);
+  padding: 3px 6px;
+}
+
+.ratioValue del {
+  color: var(--muted);
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.ratioValue strong {
+  color: inherit;
+  font-size: inherit;
+}
+
 .summaryTokens p,
 .summaryTokens > small {
   color: var(--muted);
@@ -1492,9 +1519,9 @@ tr:last-child td {
 }
 
 .tokenRatioColumn {
-  width: 72px;
-  min-width: 72px;
-  max-width: 72px;
+  width: 120px;
+  min-width: 120px;
+  max-width: 120px;
 }
 
 .tokenModelsColumn {
