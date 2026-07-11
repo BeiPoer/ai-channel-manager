@@ -218,6 +218,7 @@ small,
 }
 
 .addButton,
+.summaryButton,
 .primaryButton,
 .ghostButton,
 .iconButton,
@@ -254,6 +255,42 @@ small,
 .primaryButton:hover,
 .addButton:hover {
   background: var(--primary-strong);
+}
+
+.summaryButton {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  height: 40px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  text-align: left;
+}
+
+.summaryButton:hover,
+.summaryButton.selected {
+  border-color: #bfdbfe;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.summaryButton span {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.summaryButton small {
+  display: inline-flex;
+  min-width: 24px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--muted-strong);
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 750;
 }
 
 .ghostButton:hover,
@@ -508,6 +545,170 @@ small,
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.summaryPage {
+  display: grid;
+  gap: 16px;
+}
+
+.summaryHeader,
+.summaryCardHeader,
+.summaryCardTitle,
+.summaryCardTitle > div,
+.summaryTokensHeader,
+.summaryTokenRow {
+  display: flex;
+  align-items: center;
+}
+
+.summaryHeader,
+.summaryCardHeader,
+.summaryTokensHeader,
+.summaryTokenRow {
+  justify-content: space-between;
+}
+
+.summaryHeader {
+  gap: 18px;
+}
+
+.summaryHeader p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.summaryCard {
+  display: grid;
+  min-width: 0;
+  min-height: 244px;
+  align-content: start;
+  gap: 15px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 15px;
+}
+
+.summaryCard:hover {
+  border-color: #bfdbfe;
+}
+
+.summaryCardHeader {
+  min-width: 0;
+  gap: 10px;
+}
+
+.summaryCardTitle {
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.summaryCardTitle > button {
+  max-width: 100%;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  font-size: 16px;
+  font-weight: 750;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summaryCardTitle > button:hover {
+  color: var(--primary-strong);
+}
+
+.summaryCardTitle > div {
+  gap: 6px;
+}
+
+.summaryBalance span,
+.summaryBalance small {
+  display: block;
+}
+
+.summaryBalance span,
+.summaryTokensHeader {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.summaryBalance strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 25px;
+  line-height: 1.1;
+}
+
+.summaryBalance small {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.summaryTokens {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+}
+
+.summaryTokensHeader,
+.summaryTokenRow {
+  gap: 12px;
+  min-height: 28px;
+}
+
+.summaryTokenRow {
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.summaryTokenRow > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summaryTokenRow strong {
+  flex: 0 0 auto;
+  color: var(--text);
+}
+
+.summaryTokens p,
+.summaryTokens > small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.summaryTokens p {
+  margin-top: 8px;
+}
+
+.summaryTokens > small {
+  margin-top: 6px;
+}
+
+.summaryError {
+  margin-bottom: 14px;
 }
 
 .metricGrid {
@@ -2335,6 +2536,11 @@ select {
   }
 
   .topBar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .summaryHeader {
     align-items: flex-start;
     flex-direction: column;
   }

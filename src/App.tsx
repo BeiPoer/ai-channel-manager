@@ -9,6 +9,7 @@ import {
   Database,
   Home,
   KeyRound,
+  LayoutDashboard,
   Mail,
   Pencil,
   Plus,
@@ -823,6 +824,125 @@ function EmptyPanel({ icon, title, action }: { icon: ReactNode; title: string; a
       <p>{title}</p>
       {action}
     </div>
+  );
+}
+
+function ChannelSummaryPanel({
+  channels,
+  overviews,
+  errors,
+  loading,
+  refreshing,
+  refreshingId,
+  onRefreshAll,
+  onRefresh,
+  onOpen,
+  onAdd
+}: {
+  channels: Channel[];
+  overviews: Record<number, Overview>;
+  errors: Record<number, string>;
+  loading: boolean;
+  refreshing: boolean;
+  refreshingId: number | null;
+  onRefreshAll: () => void;
+  onRefresh: (channel: Channel) => void;
+  onOpen: (channel: Channel) => void;
+  onAdd: () => void;
+}) {
+  const hasData = Object.keys(overviews).length > 0;
+
+  return (
+    <section className="summaryPage">
+      <header className="summaryHeader">
+        <div>
+          <h2>渠道汇总</h2>
+          <p>集中查看所有上游渠道的余额、令牌和当前倍率。</p>
+        </div>
+        <button className="ghostButton" onClick={onRefreshAll} disabled={refreshing || loading || !channels.some((channel) => channel.type !== 'other')}>
+          <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
+          刷新全部
+        </button>
+      </header>
+
+      {!channels.length ? (
+        <EmptyPanel
+          icon={<Database size={24} />}
+          title="暂无渠道，添加后即可在这里统一查看"
+          action={
+            <button className="primaryButton" onClick={onAdd}>
+              <Plus size={16} />
+              添加渠道
+            </button>
+          }
+        />
+      ) : loading && !hasData ? (
+        <LoadingState label="正在加载渠道汇总" />
+      ) : (
+        <div className="summaryGrid">
+          {channels.map((channel) => {
+            const overview = overviews[channel.id];
+            const tokenRows = overview ? asRows(overview.tokens) : [];
+            const ratios = overview ? groupRatioLookup(overview.groups) : new Map<string, number>();
+            const syncing = refreshing || refreshingId === channel.id;
+
+            return (
+              <article className="summaryCard" key={channel.id}>
+                <div className="summaryCardHeader">
+                  <div className="summaryCardTitle">
+                    <button type="button" onClick={() => onOpen(channel)} title="查看渠道详情">
+                      {channel.name}
+                    </button>
+                    <div>
+                      <TypeBadge type={channel.type} />
+                      <StatusBadge status={channel.status} />
+                    </div>
+                  </div>
+                  {channel.type !== 'other' && (
+                    <button
+                      className="iconButton"
+                      onClick={() => onRefresh(channel)}
+                      disabled={syncing || loading}
+                      aria-label={`刷新渠道 ${channel.name}`}
+                      title="刷新渠道"
+                    >
+                      <RefreshCw size={16} className={syncing ? 'spin' : ''} />
+                    </button>
+                  )}
+                </div>
+
+                <div className="summaryBalance">
+                  <span>当前余额</span>
+                  <strong>{formatNumber(overview?.latest_snapshot?.balance)}</strong>
+                  <small>最近同步 {formatShortTime(channel.last_sync_at)}</small>
+                </div>
+
+                <div className="summaryTokens">
+                  <div className="summaryTokensHeader">
+                    <span>令牌</span>
+                    <span>当前倍率</span>
+                  </div>
+                  {tokenRows.length ? (
+                    tokenRows.slice(0, 4).map((row, index) => {
+                      const name = valuePreview(row.name ?? row.Name ?? row.title ?? row.id ?? row.ID);
+                      return (
+                        <div className="summaryTokenRow" key={`${channel.id}-${tokenIdOf(row) ?? index}`}>
+                          <span title={name}>{name}</span>
+                          <strong>{tokenGroupRatioLabel(channel.type, row, ratios)}</strong>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p>{errors[channel.id] || '暂无令牌缓存'}</p>
+                  )}
+                  {tokenRows.length > 4 && <small>另有 {tokenRows.length - 4} 个令牌，请进入详情查看</small>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -3711,6 +3831,11 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<TabKey>(route.module === 'channels' ? route.tab : 'overview');
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [summaryOverviews, setSummaryOverviews] = useState<Record<number, Overview>>({});
+  const [summaryErrors, setSummaryErrors] = useState<Record<number, string>>({});
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryRefreshing, setSummaryRefreshing] = useState(false);
+  const [summaryRefreshingId, setSummaryRefreshingId] = useState<number | null>(null);
   const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [balanceLogsRefreshKey, setBalanceLogsRefreshKey] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -3732,6 +3857,7 @@ export default function App() {
     }),
     [channels]
   );
+  const channelIds = channels.map((channel) => channel.id).join(',');
 
   const navigate = useCallback((nextRoute: AppRoute, mode: NavigationMode = 'push') => {
     const normalized = normalizeRoute(nextRoute);
@@ -3753,11 +3879,11 @@ export default function App() {
     const nextId =
       nextSelectedId && list.some((channel) => channel.id === nextSelectedId)
         ? nextSelectedId
-        : desiredId && list.some((channel) => channel.id === desiredId)
-          ? desiredId
-          : selectedId && list.some((channel) => channel.id === selectedId)
-            ? selectedId
-            : list[0]?.id || null;
+          : desiredId && list.some((channel) => channel.id === desiredId)
+            ? desiredId
+            : selectedId && list.some((channel) => channel.id === selectedId)
+              ? selectedId
+              : null;
     setSelectedId(nextId);
     if (route.module === 'channels') {
       const nextTab = nextSelectedId ? 'overview' : route.tab;
@@ -3805,11 +3931,29 @@ export default function App() {
 
   useEffect(() => {
     if (authState !== 'authenticated' || route.module !== 'channels') return;
-    if (route.channelId && channels.some((channel) => channel.id === route.channelId)) return;
-    const nextId = channels[0]?.id || null;
-    setSelectedId(nextId);
-    navigate(nextId ? { module: 'channels', channelId: nextId, tab: route.tab } : { module: 'channels', tab: 'overview' }, 'replace');
+    if (!route.channelId || channels.some((channel) => channel.id === route.channelId)) return;
+    setSelectedId(null);
+    navigate({ module: 'channels', tab: 'overview' }, 'replace');
   }, [authState, channels, navigate, route]);
+
+  async function loadChannelSummaries(list = channels) {
+    setSummaryLoading(true);
+    const results = await Promise.allSettled(list.map((channel) => api.overview(channel.id)));
+    const nextOverviews: Record<number, Overview> = {};
+    const nextErrors: Record<number, string> = {};
+    results.forEach((result, index) => {
+      const id = list[index].id;
+      if (result.status === 'fulfilled') nextOverviews[id] = result.value;
+      else nextErrors[id] = result.reason instanceof Error ? result.reason.message : '汇总数据加载失败';
+    });
+    setSummaryOverviews(nextOverviews);
+    setSummaryErrors(nextErrors);
+    setSummaryLoading(false);
+  }
+
+  useEffect(() => {
+    if (authState === 'authenticated' && route.module === 'channels' && !route.channelId) void loadChannelSummaries(channels);
+  }, [authState, channelIds, route]);
 
   useEffect(() => {
     if (authState !== 'authenticated') return;
@@ -3895,6 +4039,47 @@ export default function App() {
     }
   }
 
+  async function refreshAllChannels() {
+    const actionable = channels.filter((channel) => channel.type !== 'other');
+    if (!actionable.length) return;
+    setSummaryRefreshing(true);
+    setError('');
+    try {
+      const results = await Promise.allSettled(actionable.map((channel) => api.syncChannel(channel.id)));
+      const list = await api.channels();
+      setChannels(list);
+      await loadChannelSummaries(list);
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      if (failed) setError(`${failed} 个渠道刷新失败，其余渠道已更新。`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSummaryRefreshing(false);
+    }
+  }
+
+  async function refreshSummaryChannel(channel: Channel) {
+    setSummaryRefreshingId(channel.id);
+    setError('');
+    try {
+      await api.syncChannel(channel.id);
+      const [list, nextOverview] = await Promise.all([api.channels(), api.overview(channel.id)]);
+      setChannels(list);
+      setSummaryOverviews((current) => ({ ...current, [channel.id]: nextOverview }));
+      setSummaryErrors((current) => {
+        const next = { ...current };
+        delete next[channel.id];
+        return next;
+      });
+    } catch (err) {
+      setError((err as Error).message);
+      const list = await api.channels().catch(() => null);
+      if (list) setChannels(list);
+    } finally {
+      setSummaryRefreshingId(null);
+    }
+  }
+
   function openUpstreamLogin(channel: Channel) {
     window.open(api.upstreamLoginUrl(channel.id), '_blank', 'noopener,noreferrer');
   }
@@ -3909,10 +4094,9 @@ export default function App() {
       await api.deleteChannel(selected.id);
       const list = await api.channels();
       setChannels(list);
-      const nextId = list[0]?.id || null;
-      setSelectedId(nextId);
+      setSelectedId(null);
       setTab('overview');
-      navigate(nextId ? { module: 'channels', channelId: nextId, tab: 'overview' } : { module: 'channels', tab: 'overview' }, 'replace');
+      navigate({ module: 'channels', tab: 'overview' }, 'replace');
       setOverview(null);
       setAlerts([]);
     } catch (err) {
@@ -4019,6 +4203,14 @@ export default function App() {
         <button className="addButton" onClick={() => setChannelModal('new')}>
           <Plus size={17} />
           添加渠道
+        </button>
+        <button
+          className={`summaryButton ${selectedId === null ? 'selected' : ''}`}
+          onClick={() => navigate({ module: 'channels', tab: 'overview' })}
+        >
+          <LayoutDashboard size={17} />
+          <span>渠道汇总</span>
+          <small>{channels.length}</small>
         </button>
 
         <div className="channelList">
@@ -4152,15 +4344,26 @@ export default function App() {
             </section>
           </>
         ) : (
-          <div className="blank">
-            <Database size={42} />
-            <h2>暂无渠道</h2>
-            <p>添加第一个 sub2api 或 new-api 渠道后，管理台会开始展示余额、同步状态和告警任务。</p>
-            <button className="primaryButton" onClick={() => setChannelModal('new')}>
-              <Plus size={16} />
-              添加渠道
-            </button>
-          </div>
+          <>
+            {error && (
+              <div className="errorBox summaryError">
+                <AlertTriangle size={17} />
+                {error}
+              </div>
+            )}
+            <ChannelSummaryPanel
+              channels={channels}
+              overviews={summaryOverviews}
+              errors={summaryErrors}
+              loading={summaryLoading}
+              refreshing={summaryRefreshing}
+              refreshingId={summaryRefreshingId}
+              onRefreshAll={() => void refreshAllChannels()}
+              onRefresh={(channel) => void refreshSummaryChannel(channel)}
+              onOpen={(channel) => navigate({ module: 'channels', channelId: channel.id, tab: 'overview' })}
+              onAdd={() => setChannelModal('new')}
+            />
+          </>
         )}
       </main>
 

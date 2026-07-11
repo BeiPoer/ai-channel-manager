@@ -14,6 +14,11 @@ describe('frontend route helpers', () => {
     });
   });
 
+  it('uses the channel list route for the summary page', () => {
+    expect(parseAppRoute('/channels')).toEqual({ module: 'channels', tab: 'overview' });
+    expect(buildAppPath({ module: 'channels', tab: 'overview' })).toBe('/channels');
+  });
+
   it('parses owned site route with id and tab', () => {
     expect(parseAppRoute('/owned-sites/3/accounts')).toEqual({
       module: 'owned-sites',
