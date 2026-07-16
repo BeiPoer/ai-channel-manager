@@ -21,6 +21,7 @@ export function nowIso(date = new Date()): string {
 }
 
 const historyRetentionMs = 7 * 24 * 60 * 60 * 1000;
+const historyCleanupBatchSize = 5000;
 const historyTables = [
   ['balance_snapshots', 'captured_at'],
   ['balance_query_logs', 'created_at'],
@@ -29,12 +30,94 @@ const historyTables = [
   ['owned_site_upstream_monitor_results', 'checked_at']
 ] as const;
 
-export function cleanupHistory(db: DatabaseSync, now = new Date()): { cutoff: string; deleted: Record<string, number>; total: number } {
+function isDatabaseCorruption(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { errcode?: unknown; message?: unknown };
+  const errcode = Number(record.errcode);
+  return (Number.isInteger(errcode) && (errcode & 0xff) === 11) || String(record.message || '').includes('database disk image is malformed');
+}
+
+function recreateHistoryTable(db: DatabaseSync, table: (typeof historyTables)[number][0]): void {
+  const schema = db.prepare(`
+    SELECT type, sql
+    FROM sqlite_schema
+    WHERE tbl_name = ? AND sql IS NOT NULL
+    ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 WHEN 'trigger' THEN 2 ELSE 3 END, name
+  `).all(table) as Array<{ type: string; sql: string }>;
+  if (!schema.some((row) => row.type === 'table')) throw new Error(`无法读取历史表结构：${table}`);
+  const foreignKeys = Number((db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys);
+
+  db.exec('PRAGMA foreign_keys = OFF;');
+  try {
+    db.exec('BEGIN IMMEDIATE;');
+    db.exec(`DROP TABLE ${table};`);
+    for (const row of schema) db.exec(row.sql);
+    db.exec('COMMIT;');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // The original recovery error is more useful than a secondary rollback error.
+    }
+    throw error;
+  } finally {
+    db.exec(`PRAGMA foreign_keys = ${foreignKeys ? 'ON' : 'OFF'};`);
+  }
+}
+
+function deleteExpiredHistory(
+  db: DatabaseSync,
+  table: (typeof historyTables)[number][0],
+  column: (typeof historyTables)[number][1],
+  cutoff: string,
+  batchSize: number
+): number {
+  const statement = db.prepare(`
+    DELETE FROM ${table}
+    WHERE rowid IN (
+      SELECT rowid FROM ${table}
+      WHERE ${column} < ?
+      ORDER BY rowid
+      LIMIT ?
+    )
+  `);
+  let deleted = 0;
+  while (true) {
+    const changes = Number(statement.run(cutoff, batchSize).changes);
+    deleted += changes;
+    if (changes < batchSize) return deleted;
+  }
+}
+
+export function cleanupHistory(
+  db: DatabaseSync,
+  now = new Date(),
+  batchSize = historyCleanupBatchSize
+): { cutoff: string; deleted: Record<string, number>; rebuilt: string[]; total: number } {
   const cutoff = nowIso(new Date(now.getTime() - historyRetentionMs));
-  const deleted = Object.fromEntries(
-    historyTables.map(([table, column]) => [table, Number(db.prepare(`DELETE FROM ${table} WHERE ${column} < ?`).run(cutoff).changes)])
-  );
-  return { cutoff, deleted, total: Object.values(deleted).reduce((sum, count) => sum + count, 0) };
+  const limit = Math.max(1, Math.floor(batchSize));
+  const deleted: Record<string, number> = {};
+  const rebuilt: string[] = [];
+
+  for (const [table, column] of historyTables) {
+    try {
+      // ponytail: rowid batches bound transaction size; add timestamp indexes only if cleanup becomes measurably slow.
+      deleted[table] = deleteExpiredHistory(db, table, column, cutoff, limit);
+    } catch (error) {
+      if (!isDatabaseCorruption(error)) throw error;
+      console.error(`历史表 ${table} 已损坏，将丢弃其数据并重建。`, error);
+      try {
+        db.exec(`REINDEX ${table};`);
+      } catch {
+        // Reindex is best-effort; recreating the disposable history table is the fallback.
+      }
+      recreateHistoryTable(db, table);
+      deleted[table] = 0;
+      rebuilt.push(table);
+    }
+  }
+
+  return { cutoff, deleted, rebuilt, total: Object.values(deleted).reduce((sum, count) => sum + count, 0) };
 }
 
 export function createDatabase(filename = process.env.DB_PATH || path.join(projectRoot, 'data', 'app.sqlite')): DatabaseSync {

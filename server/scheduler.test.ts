@@ -101,15 +101,61 @@ describe('automation evaluation', () => {
       `).run(timestamp);
     }
 
-    const result = cleanupHistory(db, now);
+    const result = cleanupHistory(db, now, 1);
 
     expect(result.total).toBe(5);
+    expect(result.rebuilt).toEqual([]);
     for (const table of Object.keys(result.deleted)) {
       expect((db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count).toBe(1);
     }
     expect((db.prepare('SELECT COUNT(*) AS count FROM channels').get() as { count: number }).count).toBe(1);
     expect((db.prepare('SELECT COUNT(*) AS count FROM owned_sites').get() as { count: number }).count).toBe(1);
     db.close();
+  });
+
+  it('rebuilds a corrupt history table without touching configuration', () => {
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    db.prepare(`
+      INSERT INTO owned_sites (id, name, type, base_url, status, created_at, updated_at)
+      VALUES (1, 'site', 'sub2api', 'https://example.com', 'active', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO owned_site_upstream_monitor_results (site_id, account_id, status, checked_at)
+      VALUES (1, 'account', 'success', ?)
+    `).run(now);
+
+    const realPrepare = db.prepare.bind(db);
+    let injected = false;
+    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      if (!injected && sql.includes('DELETE FROM owned_site_upstream_monitor_results')) {
+        injected = true;
+        throw Object.assign(new Error('database disk image is malformed'), { errcode: 779 });
+      }
+      return realPrepare(sql);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const result = cleanupHistory(db, new Date());
+      const indexes = realPrepare(`
+        SELECT name FROM sqlite_schema
+        WHERE type = 'index' AND tbl_name = 'owned_site_upstream_monitor_results' AND sql IS NOT NULL
+        ORDER BY name
+      `).all() as Array<{ name: string }>;
+
+      expect(result.rebuilt).toEqual(['owned_site_upstream_monitor_results']);
+      expect(realPrepare('SELECT COUNT(*) AS count FROM owned_site_upstream_monitor_results').get()).toMatchObject({ count: 0 });
+      expect(realPrepare('SELECT COUNT(*) AS count FROM owned_sites').get()).toMatchObject({ count: 1 });
+      expect(indexes.map((row) => row.name)).toEqual([
+        'idx_owned_site_upstream_results_account_time',
+        'idx_owned_site_upstream_results_monitor_time'
+      ]);
+    } finally {
+      prepareSpy.mockRestore();
+      errorSpy.mockRestore();
+      db.close();
+    }
   });
 
   it('does not let a slow scheduler job block another job', async () => {
