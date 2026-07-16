@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanupHistory, createDatabase, migrate, nowIso, setSetting } from './db.js';
-import { evaluateGroupTask, evaluateTask, runDueTasks } from './scheduler.js';
+import { evaluateGroupTask, evaluateTask, runDueTasks, Scheduler } from './scheduler.js';
 import { filterSkippedModels, modelMatchesPattern, runDueOwnedSiteTasks, runDueOwnedSiteUpstreamMonitors } from './ownedSites.js';
 import type { AutomationTaskRecord, BalanceSnapshot } from './types.js';
 
@@ -112,6 +112,29 @@ describe('automation evaluation', () => {
     db.close();
   });
 
+  it('does not let a slow scheduler job block another job', async () => {
+    const db = createDatabase(':memory:');
+    let releaseSlowJob: (() => void) | undefined;
+    const fastJob = vi.fn(async () => undefined);
+    const slowJob = vi.fn(() => new Promise<void>((resolve) => {
+      releaseSlowJob = resolve;
+    }));
+    const scheduler = new Scheduler(db, [fastJob, slowJob]);
+
+    try {
+      scheduler.start();
+      await vi.waitFor(() => expect(fastJob).toHaveBeenCalledTimes(1));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      (scheduler as unknown as { tick(): void }).tick();
+      await vi.waitFor(() => expect(fastJob).toHaveBeenCalledTimes(2));
+      expect(slowJob).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseSlowJob?.();
+      scheduler.stop();
+      db.close();
+    }
+  });
+
   it('matches upstream monitor model wildcard patterns', () => {
     expect(modelMatchesPattern('gpt-image-1', 'gpt-image-*')).toBe(true);
     expect(modelMatchesPattern('gpt-4o', 'gpt-image-*')).toBe(false);
@@ -209,14 +232,8 @@ describe('automation evaluation', () => {
       INSERT INTO balance_snapshots (channel_id, balance, used_balance, unit, raw_json, captured_at)
       VALUES (1, 1, NULL, 'quota', '{}', ?)
     `).run(now);
-    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
-    syncSpy.mockResolvedValue({
-      profile: {},
-      balanceSnapshot: { balance: 1, unit: 'quota', raw: {} },
-      groups: [],
-      tokens: [],
-      raw: {}
-    });
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannelBalance');
+    syncSpy.mockResolvedValue({ balance: 1, unit: 'quota', raw: {} });
     const mailer = vi.fn(async () => {
       throw new Error('smtp failed');
     });
@@ -241,7 +258,7 @@ describe('automation evaluation', () => {
       INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
       VALUES (1, 'low_balance', 1, 1, 99, 60, 0, ?, ?)
     `).run(now, now);
-    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannelBalance');
     syncSpy.mockRejectedValue(new Error('余额查询失败：profile.balance 缺失'));
     const mailer = vi.fn(async () => 'ok');
 
@@ -267,7 +284,7 @@ describe('automation evaluation', () => {
       INSERT INTO automation_tasks (channel_id, type, enabled, interval_minutes, threshold, lookback_minutes, cooldown_minutes, created_at, updated_at)
       VALUES (1, 'low_balance', 1, 1, 99, 60, 0, ?, ?)
     `).run(now, now);
-    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannel');
+    const syncSpy = vi.spyOn(await import('./adapters.js'), 'syncChannelBalance');
     const mailer = vi.fn(async () => 'ok');
 
     await runDueTasks(db, mailer);

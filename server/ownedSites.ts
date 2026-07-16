@@ -1461,15 +1461,15 @@ export async function runOwnedSiteUpstreamMonitor(
     .map((item) => item.latency_ms)
     .filter((value): value is number => typeof value === 'number')
     .reduce<number | null>((max, value) => (max === null ? value : Math.max(max, value)), null);
-
+  if (options.alert) {
+    await maybeSendOwnedSiteUpstreamAlerts(db, site, account, resultItems, checkedAtDate, options.mailer || sendEmail);
+  }
+  const completedAt = nowIso();
   db.prepare(`
     UPDATE owned_site_upstream_monitors
     SET last_run_at = ?, last_status = ?, last_error = ?, last_latency_ms = ?, updated_at = ?
     WHERE id = ?
-  `).run(checkedAt, status, lastError, lastLatency, checkedAt, row.id);
-  if (options.alert) {
-    await maybeSendOwnedSiteUpstreamAlerts(db, site, account, resultItems, checkedAtDate, options.mailer || sendEmail);
-  }
+  `).run(completedAt, status, lastError, lastLatency, completedAt, row.id);
 
   const nextRow = getMonitorRow(db, site.id, account.id);
   return {

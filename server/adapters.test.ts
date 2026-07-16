@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getTokenModels, syncChannel, updateTokenGroup } from './adapters.js';
+import { getTokenModels, syncChannel, syncChannelBalance, updateTokenGroup } from './adapters.js';
 import { createDatabase, nowIso } from './db.js';
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void;
@@ -61,6 +61,29 @@ describe('channel adapters', () => {
     expect(JSON.parse(groups.normalized_json)).toEqual([{ id: 3, name: 'default', rate_multiplier: 1, user_rate_multiplier: 0.1 }]);
     expect(JSON.parse(tokens.normalized_json)).toHaveLength(1);
     expect(queryLog).toMatchObject({ status: 'success', balance: 12.5, error: null });
+    db.close();
+  });
+
+  it('checks sub2api balance without fetching full channel data', async () => {
+    const requestedPaths: string[] = [];
+    const baseUrl = await startMock((req, res, url) => {
+      requestedPaths.push(url.pathname);
+      if (url.pathname === '/api/v1/auth/login') return json(res, 200, { code: 0, data: { access_token: 'access-a' } });
+      if (req.headers.authorization !== 'Bearer access-a') return json(res, 401, { message: 'unauthorized' });
+      if (url.pathname === '/api/v1/auth/me') return json(res, 200, { code: 0, data: { balance: 12.5 } });
+      return json(res, 500, { message: 'full sync endpoint must not be called' });
+    });
+    const db = createDatabase(':memory:');
+    const now = nowIso();
+    const result = db.prepare(`
+      INSERT INTO channels (name, type, base_url, username, password, status, created_at, updated_at)
+      VALUES ('s', 'sub2api', ?, 'u@example.com', 'pw', 'active', ?, ?)
+    `).run(baseUrl, now, now);
+
+    await syncChannelBalance(db, Number(result.lastInsertRowid));
+
+    expect(requestedPaths).toEqual(['/api/v1/auth/login', '/api/v1/auth/me']);
+    expect(db.prepare('SELECT balance FROM balance_snapshots').get()).toMatchObject({ balance: 12.5 });
     db.close();
   });
 

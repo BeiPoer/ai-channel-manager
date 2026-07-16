@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getEmailSettings, sendEmail } from './email.js';
 import { cleanupHistory, nowIso, parseJson, parseTask, readChannelCache, readTaskState, upsertTaskState } from './db.js';
 import { filterGroupsByIdentifiers, filterGroupsByTokenUsage, groupList, normalizeGroups, watchedGroupIdentifiers } from './groupMonitoring.js';
-import { syncChannel } from './adapters.js';
+import { syncChannel, syncChannelBalance } from './adapters.js';
 import { runDueOwnedSiteTasks, runDueOwnedSiteUpstreamMonitors } from './ownedSites.js';
 import type { AutomationTaskRecord, BalanceSnapshot, ChannelType } from './types.js';
 
@@ -14,6 +14,8 @@ export interface EvaluationResult {
 
 const groupTaskStateKey = 'groups';
 const cleanupIntervalMs = 24 * 60 * 60 * 1000;
+type ChannelTaskRow = AutomationTaskRecord & { channel_name: string; channel_type: ChannelType };
+type SchedulerJob = () => Promise<void>;
 
 function minutesSince(value: string | null, now = new Date()): number {
   if (!value) return Infinity;
@@ -150,7 +152,7 @@ async function recordAlert(
   db.prepare('UPDATE automation_tasks SET last_alert_at = ?, updated_at = ? WHERE id = ?').run(nowIso(now), nowIso(now), row.id);
 }
 
-export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise<void> {
+function loadDueTaskRows(db: DatabaseSync, now: Date, groupTasks: boolean): ChannelTaskRow[] {
   const rows = db.prepare(`
     SELECT t.*, c.name AS channel_name, c.type AS channel_type
     FROM automation_tasks t
@@ -158,21 +160,62 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
     WHERE t.enabled = 1
       AND c.type <> 'other'
       AND c.ignored = 0
-  `).all() as unknown as Array<AutomationTaskRecord & { channel_name: string; channel_type: ChannelType }>;
-  const now = new Date();
-  const dueRows = rows.filter((row) => minutesSince(row.last_run_at, now) >= row.interval_minutes);
-  const rowsByChannel = new Map<number, Array<AutomationTaskRecord & { channel_name: string; channel_type: ChannelType }>>();
-  for (const row of dueRows) {
-    const channelRows = rowsByChannel.get(row.channel_id) || [];
+  `).all() as unknown as ChannelTaskRow[];
+  return rows.filter((row) => isGroupTask(row) === groupTasks && minutesSince(row.last_run_at, now) >= row.interval_minutes);
+}
+
+function taskRowsByChannel(rows: ChannelTaskRow[]): Map<number, ChannelTaskRow[]> {
+  const grouped = new Map<number, ChannelTaskRow[]>();
+  for (const row of rows) {
+    const channelRows = grouped.get(row.channel_id) || [];
     channelRows.push(row);
-    rowsByChannel.set(row.channel_id, channelRows);
+    grouped.set(row.channel_id, channelRows);
   }
-  for (const channelRows of rowsByChannel.values()) {
+  return grouped;
+}
+
+function markTaskRowsStarted(db: DatabaseSync, rows: ChannelTaskRow[], now: Date): void {
+  for (const row of rows) {
+    db.prepare('UPDATE automation_tasks SET last_run_at = ?, updated_at = ? WHERE id = ?').run(nowIso(now), nowIso(now), row.id);
+  }
+}
+
+async function runBalanceTaskRows(db: DatabaseSync, channelRows: ChannelTaskRow[], now: Date, mailer: typeof sendEmail): Promise<void> {
+  markTaskRowsStarted(db, channelRows, now);
+  try {
+    await syncChannelBalance(db, channelRows[0].channel_id);
+  } catch {
+    return;
+  }
+  const snapshots = db.prepare(`
+    SELECT * FROM balance_snapshots
+    WHERE channel_id = ? AND captured_at >= ?
+    ORDER BY captured_at ASC
+  `).all(channelRows[0].channel_id, nowIso(new Date(now.getTime() - Math.max(...channelRows.map((row) => row.lookback_minutes)) * 60000))) as unknown as BalanceSnapshot[];
+  for (const row of channelRows) {
+    const cutoff = new Date(now.getTime() - row.lookback_minutes * 60000);
+    const taskSnapshots = snapshots.filter((snapshot) => new Date(snapshot.captured_at) >= cutoff);
+    if (taskSnapshots.length < 2) {
+      const latest = db.prepare(`
+        SELECT * FROM balance_snapshots WHERE channel_id = ? ORDER BY captured_at DESC LIMIT 1
+      `).get(row.channel_id) as BalanceSnapshot | undefined;
+      if (latest && !taskSnapshots.some((snapshot) => snapshot.id === latest.id)) taskSnapshots.push(latest);
+    }
+    await recordAlert(db, row, evaluateTask(row, taskSnapshots, row.channel_name), now, mailer);
+  }
+}
+
+export async function runDueBalanceTasks(db: DatabaseSync, mailer = sendEmail): Promise<void> {
+  const now = new Date();
+  await Promise.all(Array.from(taskRowsByChannel(loadDueTaskRows(db, now, false)).values(), (rows) => runBalanceTaskRows(db, rows, now, mailer)));
+}
+
+export async function runDueGroupTasks(db: DatabaseSync, mailer = sendEmail): Promise<void> {
+  const now = new Date();
+  for (const channelRows of taskRowsByChannel(loadDueTaskRows(db, now, true)).values()) {
     const first = channelRows[0];
     const beforeChannelGroups = readChannelCache(db, first.channel_id, 'groups', []);
-    for (const row of channelRows) {
-      db.prepare('UPDATE automation_tasks SET last_run_at = ?, updated_at = ? WHERE id = ?').run(nowIso(now), nowIso(now), row.id);
-    }
+    markTaskRowsStarted(db, channelRows, now);
     try {
       await syncChannel(db, first.channel_id);
     } catch {
@@ -181,39 +224,35 @@ export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise
     }
     const afterGroups = readChannelCache(db, first.channel_id, 'groups', []);
     const afterTokens = readChannelCache(db, first.channel_id, 'tokens', []);
-    const snapshots = db.prepare(`
-      SELECT * FROM balance_snapshots
-      WHERE channel_id = ? AND captured_at >= ?
-      ORDER BY captured_at ASC
-    `).all(first.channel_id, nowIso(new Date(now.getTime() - Math.max(...channelRows.map((row) => row.lookback_minutes)) * 60000))) as unknown as BalanceSnapshot[];
     for (const row of channelRows) {
-      if (isGroupTask(row)) {
-        const taskGroups = readTaskState(db, row.id, groupTaskStateKey, []);
-        const beforeGroups = taskGroups.exists ? taskGroups : beforeChannelGroups;
-        const groups = taskGroupsForEvaluation(row, beforeGroups.value, afterGroups.value, afterTokens.value, row.channel_type);
-        await recordAlert(db, row, evaluateGroupTask(row, groups.before, groups.after, row.channel_name, beforeGroups.exists), now, mailer);
-        upsertTaskState(db, row.id, groupTaskStateKey, groups.state);
-        continue;
-      }
-      const cutoff = new Date(now.getTime() - row.lookback_minutes * 60000);
-      const taskSnapshots = snapshots.filter((snapshot) => new Date(snapshot.captured_at) >= cutoff);
-      if (taskSnapshots.length < 2) {
-        const latest = db.prepare(`
-          SELECT * FROM balance_snapshots WHERE channel_id = ? ORDER BY captured_at DESC LIMIT 1
-        `).get(row.channel_id) as BalanceSnapshot | undefined;
-        if (latest && !taskSnapshots.some((snapshot) => snapshot.id === latest.id)) taskSnapshots.push(latest);
-      }
-      await recordAlert(db, row, evaluateTask(row, taskSnapshots, row.channel_name), now, mailer);
+      const taskGroups = readTaskState(db, row.id, groupTaskStateKey, []);
+      const beforeGroups = taskGroups.exists ? taskGroups : beforeChannelGroups;
+      const groups = taskGroupsForEvaluation(row, beforeGroups.value, afterGroups.value, afterTokens.value, row.channel_type);
+      await recordAlert(db, row, evaluateGroupTask(row, groups.before, groups.after, row.channel_name, beforeGroups.exists), now, mailer);
+      upsertTaskState(db, row.id, groupTaskStateKey, groups.state);
     }
   }
 }
 
+export async function runDueTasks(db: DatabaseSync, mailer = sendEmail): Promise<void> {
+  await runDueBalanceTasks(db, mailer);
+  await runDueGroupTasks(db, mailer);
+}
+
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
-  private running = false;
+  private runningJobs = new Set<SchedulerJob>();
   private lastCleanupAt = 0;
 
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly jobs: SchedulerJob[] = [
+      () => runDueBalanceTasks(db),
+      () => runDueGroupTasks(db),
+      () => runDueOwnedSiteTasks(db),
+      () => runDueOwnedSiteUpstreamMonitors(db)
+    ]
+  ) {}
 
   start(): void {
     if (this.timer) return;
@@ -226,20 +265,18 @@ export class Scheduler {
     this.timer = null;
   }
 
-  private async tick(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    try {
-      const now = Date.now();
-      if (now - this.lastCleanupAt >= cleanupIntervalMs) {
-        cleanupHistory(this.db, new Date(now));
-        this.lastCleanupAt = now;
-      }
-      await runDueTasks(this.db);
-      await runDueOwnedSiteTasks(this.db);
-      await runDueOwnedSiteUpstreamMonitors(this.db);
-    } finally {
-      this.running = false;
+  private tick(): void {
+    const now = Date.now();
+    if (now - this.lastCleanupAt >= cleanupIntervalMs) {
+      cleanupHistory(this.db, new Date(now));
+      this.lastCleanupAt = now;
+    }
+    for (const job of this.jobs) {
+      if (this.runningJobs.has(job)) continue;
+      this.runningJobs.add(job);
+      void job()
+        .catch((error) => console.error('Scheduler job failed:', error))
+        .finally(() => this.runningJobs.delete(job));
     }
   }
 }

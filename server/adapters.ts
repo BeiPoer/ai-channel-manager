@@ -15,6 +15,8 @@ interface NewApiQuotaConversion {
   unit: string;
 }
 
+type BalanceCheckResult = Pick<SyncResult, 'profile' | 'balanceSnapshot'> & { status?: unknown };
+
 export type TokenGroupUpdatePayload = {
   group?: unknown;
   group_id?: unknown;
@@ -457,7 +459,7 @@ function applySub2apiUserGroupRates(groups: unknown[], rates: unknown): unknown[
   });
 }
 
-async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
+async function querySub2apiBalance(db: DatabaseSync, channel: ChannelRecord): Promise<BalanceCheckResult> {
   let profile: unknown;
   let balance: number;
   try {
@@ -470,6 +472,11 @@ async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<Sy
   }
   const balanceSnapshot: SyncResult['balanceSnapshot'] = { balance, used_balance: null, unit: 'sub2api-balance', raw: profile };
   recordBalanceQuerySuccess(db, channel.id, balanceSnapshot);
+  return { profile, balanceSnapshot };
+}
+
+async function syncSub2api(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
+  const { profile, balanceSnapshot } = await querySub2apiBalance(db, channel);
   const groupsPayload = await sub2apiRequest(db, channel, '/groups/available');
   const userGroupRates = await sub2apiRequest(db, channel, '/groups/rates').catch(() => ({}));
   const groups = applySub2apiUserGroupRates(Array.isArray(groupsPayload) ? groupsPayload : extractPage(groupsPayload).items, userGroupRates);
@@ -516,7 +523,7 @@ async function fetchNewApiTokens(channel: ChannelRecord): Promise<{ items: unkno
   return { items: allItems, raw: rawPages };
 }
 
-async function syncNewApi(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
+async function queryNewApiBalance(db: DatabaseSync, channel: ChannelRecord): Promise<BalanceCheckResult> {
   let profile: unknown;
   let quota: number;
   try {
@@ -540,6 +547,11 @@ async function syncNewApi(db: DatabaseSync, channel: ChannelRecord): Promise<Syn
     raw: { profile, status, conversion }
   };
   recordBalanceQuerySuccess(db, channel.id, balanceSnapshot);
+  return { profile, balanceSnapshot, status };
+}
+
+async function syncNewApi(db: DatabaseSync, channel: ChannelRecord): Promise<SyncResult> {
+  const { profile, balanceSnapshot, status } = await queryNewApiBalance(db, channel);
   const groupsPayload = await newApiRequest(channel, '/user/self/groups');
   const tokens = await fetchNewApiTokens(channel);
   const groups = Array.isArray(groupsPayload)
@@ -554,8 +566,7 @@ async function syncNewApi(db: DatabaseSync, channel: ChannelRecord): Promise<Syn
   };
 }
 
-function migrateNewApiRawQuotaSnapshots(db: DatabaseSync, channelId: number, result: SyncResult): void {
-  const snapshot = result.balanceSnapshot;
+function migrateNewApiRawQuotaSnapshots(db: DatabaseSync, channelId: number, snapshot: SyncResult['balanceSnapshot']): void {
   if (!String(snapshot.unit).startsWith('new-api-')) return;
   const raw = isRecord(snapshot.raw) ? snapshot.raw : {};
   const conversion = storedNewApiQuotaConversion(raw.conversion);
@@ -568,6 +579,14 @@ function migrateNewApiRawQuotaSnapshots(db: DatabaseSync, channelId: number, res
     WHERE channel_id = ?
       AND unit = 'new-api-quota'
   `).run(conversion.quotaPerUnit, conversion.rate, conversion.quotaPerUnit, conversion.rate, snapshot.unit, channelId);
+}
+
+function persistBalanceSnapshot(db: DatabaseSync, channelId: number, snapshot: SyncResult['balanceSnapshot']): void {
+  migrateNewApiRawQuotaSnapshots(db, channelId, snapshot);
+  db.prepare(`
+    INSERT INTO balance_snapshots (channel_id, balance, used_balance, unit, raw_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(channelId, snapshot.balance, snapshot.used_balance ?? null, snapshot.unit, JSON.stringify(snapshot.raw ?? null), nowIso());
 }
 
 function upsertCache(db: DatabaseSync, channelId: number, key: CacheKey, raw: unknown, normalized: unknown): void {
@@ -769,24 +788,13 @@ async function getNewApiTokenModels(db: DatabaseSync, channel: ChannelRecord, to
 }
 
 function persistSyncResult(db: DatabaseSync, channel: ChannelRecord, result: SyncResult): void {
-  migrateNewApiRawQuotaSnapshots(db, channel.id, result);
   upsertCache(db, channel.id, 'profile', result.raw.profile ?? result.profile, result.profile);
   upsertCache(db, channel.id, 'groups', result.raw.groups ?? result.groups, result.groups);
   upsertCache(db, channel.id, 'tokens', result.raw.tokens ?? result.tokens, result.tokens);
   if (channel.type === 'sub2api') {
     upsertCache(db, channel.id, 'subscriptions', result.raw.subscriptions ?? result.subscriptions ?? null, result.subscriptions ?? null);
   }
-  db.prepare(`
-    INSERT INTO balance_snapshots (channel_id, balance, used_balance, unit, raw_json, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    channel.id,
-    result.balanceSnapshot.balance,
-    result.balanceSnapshot.used_balance ?? null,
-    result.balanceSnapshot.unit,
-    JSON.stringify(result.balanceSnapshot.raw ?? null),
-    nowIso()
-  );
+  persistBalanceSnapshot(db, channel.id, result.balanceSnapshot);
   db.prepare(`
     UPDATE channels
     SET status = 'active', last_sync_at = ?, last_error = NULL, updated_at = ?
@@ -807,6 +815,15 @@ export async function syncChannel(db: DatabaseSync, channelId: number): Promise<
     setChannelSyncStatus(db, channel.id, 'error', (error as Error).message);
     throw error;
   }
+}
+
+export async function syncChannelBalance(db: DatabaseSync, channelId: number): Promise<SyncResult['balanceSnapshot']> {
+  const channel = getChannel(db, channelId);
+  if (!channel) throw new UpstreamError('渠道不存在', 404);
+  if (channel.type === 'other') throw new UpstreamError('其它渠道仅用于记录，不支持余额查询', 400);
+  const result = channel.type === 'sub2api' ? await querySub2apiBalance(db, channel) : await queryNewApiBalance(db, channel);
+  persistBalanceSnapshot(db, channel.id, result.balanceSnapshot);
+  return result.balanceSnapshot;
 }
 
 export async function updateTokenGroup(
